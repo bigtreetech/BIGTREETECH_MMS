@@ -457,8 +457,6 @@ BIT_MAX_TIME=.000030
             else
                 echo -e "${WARNING}ViViD ${PURPLE}${aht30}${INFO} not patched!"
             fi
-            local aht30_cfg="${KLIPPER_CONFIG_HOME}/sample-bigtreetech-mms/hardware/mms-heater.cfg"
-            sed -i 's/sensor_type: AHT3X/sensor_type: AHT10/g' "${aht30_cfg}"
         fi
 
         echo -e "${INFO}ViViD for klipper installation completed!"
@@ -653,6 +651,12 @@ set_user_config() {
     local purge="${swap_dir}/mms-purge.cfg"
     local brush="${swap_dir}/mms-brush.cfg"
     local cutter="${swap_dir}/mms-cut.cfg"
+
+    # aht30 config [ATH10/AHT3X]
+    if [ "${g_aht30_patch}" == 1 ]; then
+        local aht30_cfg="${mms_dir}/hardware/mms-heater.cfg"
+        sed -i 's/sensor_type: AHT3X/sensor_type: AHT10/g' "${aht30_cfg}"
+    fi
 
     echo -e "${INFO}Cutter must be configured, please configure the specific position in ${PURPLE}${cutter}${INPUT}"
 
