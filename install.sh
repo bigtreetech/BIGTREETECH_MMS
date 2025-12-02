@@ -200,7 +200,7 @@ self_update() {
         echo -e "${B_GREEN}Running the new install script..."
         cd - >/dev/null
         exec "$SCRIPTNAME" "${ARGS[@]}"
-        exit 0 # Exit this old instance
+        exit 0 weg# Exit this old instance
     fi
     GIT_VER=$(git describe --tags)
     echo -e "${B_GREEN}Already the latest version: ${GIT_VER}"
@@ -357,8 +357,10 @@ set_klipper_screen() {
 }
 
 get_version() {
-    echo -e "${GREEN}${SECTION}Klipper: ${KLIPPY_VERSION}"
-    echo -e "KlipperScreen: ${KLIPPER_SCREEN_VERSION}"
+    VIVID_VER=$(git describe --tags)
+    echo -e "${B_GREEN}${SECTION}ViViD script: ${VIVID_VER}"
+    echo -e "Klipper: ${KLIPPY_VERSION}"
+    echo -e "KlipperScreen: ${KLIPPER_SCREEN_VERSION}${INPUT}"
 }
 
 install_klippy() {
