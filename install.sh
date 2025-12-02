@@ -451,7 +451,7 @@ BIT_MAX_TIME=.000030
         if [ "${g_aht30_patch}" == 1 ]; then
             if [[ -f "${aht30}" ]]; then
                 sed -i '/^[[:space:]]*'"'"'INIT'"'"'[[:space:]]*:[[:space:]]*\[0xE1, 0x08, 0x00\],/ { s/^/# /; a\
-        '"'"'INIT'"'"'              :[0xBE, 0x08, 0x00],
+    '"'"'INIT'"'"'              :[0xBE, 0x08, 0x00],
                 }' "${aht30}"
                 echo -e "${INFO}ViViD ${PURPLE}${aht30}${INFO} patch completed!"
             else
