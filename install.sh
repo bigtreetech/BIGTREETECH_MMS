@@ -212,23 +212,57 @@ verify_not_root() {
     fi
 }
 
+verify_version() {
+    local name=$1
+    local dir=$2
+    local oldest=$3
+    local latest=$4
+
+    if [ -d "${dir}" ]; then
+        local commit_id=$(git -C "${dir}" log -n 1 --pretty=%H)
+        local err_oldest=0
+        local err_lastest=0
+
+        if ! git -C "${dir}" merge-base --is-ancestor "${oldest}" "${commit_id}"; then
+            err_oldest=1
+        fi
+        if ! git -C "${dir}" merge-base --is-ancestor "${commit_id}" "${latest}"; then
+            err_lastest=1
+        fi
+
+        if [ "${err_oldest}" == 1 ] || [ "${err_lastest}" == 1 ]; then
+            local commit_id=$(git -C ${dir} describe --tags)
+            echo -e "${WARNING}${SECTION}Your ${name} version is: ${PURPLE}${commit_id}${WARNING}
+not between ${PURPLE}${oldest}${WARNING} and ${PURPLE}${latest}${WARNING}
+may not be suitable, it is best to update ${name} version as suggested.${INPUT}"
+            yn=$(prompt_yn "I confirm that this version of ${name} is compatible with ViViD.")
+            echo
+            if [ "$yn" = "n" ]; then
+                abort "${name} version ${PURPLE}${commit_id}${ERROR} seems incompatible."
+            fi
+        fi
+    fi
+}
+
 verify_home_dirs() {
-    if [ ! -d "${KLIPPER_HOME}" ]; then
+    if [ -d "${KLIPPER_HOME}" ]; then
+        local klipper_oldest_id="938300f3c3cc25448c499a3a8ca5b47b7a6d4fa8"
+        local klipper_latest_id="938300f3c3cc25448c499a3a8ca5b47b7a6d4fa8"
+        verify_version "Klipper" "${KLIPPER_HOME}" "${klipper_oldest_id}" "${klipper_latest_id}"
+    else
         echo -e "${ERROR}Klipper home directory (${PURPLE}${KLIPPER_HOME}${ERROR}) not found."
         abort
-    fi
-    if ! git -C "${KLIPPER_HOME}" merge-base --is-ancestor "938300f3c3cc25448c499a3a8ca5b47b7a6d4fa8" HEAD; then
-        local commit_id=$(git -C ${KLIPPER_HOME} describe --tags)
-        echo -e "${WARNING}Your klipper version is ${PURPLE}${commit_id}${WARNING}, may not be suitable, it is best to update Klipper as suggested.${INPUT}"
     fi
 
     if [ ! -d "${KLIPPER_CONFIG_HOME}" ]; then
         echo -e "${ERROR}Klipper config directory (${PURPLE}${KLIPPER_CONFIG_HOME}${ERROR}) not found."
         abort
     fi
-    if ! git -C "${ks_dir}" merge-base --is-ancestor "b3115f9b9b329642d4dbf0ad225ab065ea3eda80" HEAD; then
-        local commit_id=$(git -C ${ks_dir} describe --tags)
-        echo -e "${WARNING}Your KlipperScreen version is ${PURPLE}${commit_id}${WARNING}, may not be suitable, it is best to update KlipperScreen as suggested.${INPUT}"
+
+    if [ -d "${ks_dir}" ]; then
+        local ks_oldest_id="b3115f9b9b329642d4dbf0ad225ab065ea3eda80"
+        local ks_latest_id="61f7afd1e21f7b022e7a6bfb29992d3c396a5c50"
+        verify_version "KlipperScreen" "${ks_dir}" "${ks_oldest_id}" "${ks_latest_id}"
     fi
 }
 
@@ -244,7 +278,7 @@ set_serial_id() {
     mapfile -t OPTIONS < <(ls /dev/serial/by-id/ 2>/dev/null)
     local opt_num=${#OPTIONS[@]}
     if [ "${opt_num}" == 0 ]; then
-        echo -e "${WARNING}Device serial id not found, please confirm if the ViViD cable is properly plugged in.${INPUT}"
+        echo -e "${WARNING}${SECTION}Device serial id not found, please confirm if the ViViD cable is properly plugged in.${INPUT}"
         yn=$(prompt_yn "Do not configure the serial id for now, manually modify it after installation is complete.")
         echo
         if [ "$yn" = "n" ]; then
@@ -252,8 +286,8 @@ set_serial_id() {
         fi
     else
         if [ "${opt_num}" == 1 ]; then
-            echo -e "${WARNING}Only 1 serial id was found. ViViD requires at least 2(ViViD + buffer). Please confirm if the ViViD cable is properly plugged in.${INPUT}"
-            yn=$(prompt_yn "Configure one first, and manually modify the rest after installation is complete")
+            echo -e "${WARNING}${SECTION}Only 1 serial id was found. ViViD requires at least 2(ViViD + buffer). Please confirm if the ViViD cable is properly plugged in.${INPUT}"
+            yn=$(prompt_yn "Configure one first, and manually modify the rest after installation is complete.")
             echo
             if [ "$yn" = "n" ]; then
                 abort
@@ -296,7 +330,7 @@ set_cutter() {
         yn=$(prompt_yn "Continue first, the cutter will be installed later.")
         echo
         if [ "$yn" = "n" ]; then
-            abort "ViViD cannot be used without a cutter.!"
+            abort "ViViD cannot be used without a cutter!"
         fi
     fi
     g_cutter=1
@@ -309,7 +343,7 @@ set_entry_sensor() {
     echo
     if [ "$yn" = "n" ]; then
         echo -e "${WARNING}Installing an entry sensor is highly recommended, as it can improve the accuracy of ViViD in identifying the location of filament.${INPUT}"
-        yn=$(prompt_yn "Do you still want to continue without entry sensor")
+        yn=$(prompt_yn "Do you still want to continue without entry sensor?")
         echo
         if [ "$yn" = "n" ]; then
             abort
@@ -347,7 +381,7 @@ set_brush() {
 set_klipper_screen() {
     # KlipperScreen
     echo -e "${PROMPT}${SECTION}Installing ${PURPLE}KlipperScreen for ViViD${PROMPT} will add a ViViD management menu to KlipperScreen.${INPUT}"
-    yn=$(prompt_yn "Install KlipperScreen")
+    yn=$(prompt_yn "Install KlipperScreen?")
     echo
     if [ "$yn" = "n" ]; then
         g_klippe_screen=0
