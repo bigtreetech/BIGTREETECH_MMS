@@ -247,7 +247,7 @@ verify_version() {
             err_oldest="Too ${PURPLE}old${WARNING} version "
         fi
 
-        if git -C "${dir}" rev-parse --verify "${latest}" >/dev/null; then
+        if git -C "${dir}" cat-file -e "${latest}" 2>/dev/null; then
             if ! git -C "${dir}" merge-base --is-ancestor "${commit_id}" "${latest}"; then
                 err_lastest="Too ${PURPLE}new${WARNING} version "
             fi
