@@ -516,7 +516,7 @@ include_exclude_config_files() {
             sed -i -e "\|${mms_sed}|d" "$printer_cfg"
             echo -e "${INFO}ViViD config has been removed from ${PURPLE}${printer_cfg}"
         else
-            local already_included=$(grep -c "${mms_sed}" ${printer_cfg} || true)
+            local already_included=$(grep -c "^${mms_sed}" ${printer_cfg} || true)
             if [ "${already_included}" -eq 0 ]; then
                 sed -i "1i ${mms_sed}" ${printer_cfg}
                 echo -e "${INFO}ViViD config has been added to ${PURPLE}${printer_cfg}"
