@@ -53,6 +53,26 @@ ks_dst_dir="${HOME}/${VIVID_DIR}"
 screen="$ks_dir/screen.py"
 gcodes="$ks_dir/panels/gcodes.py"
 
+g_vivid_id=""
+g_buffer_id=""
+g_cutter=0
+g_entry_sensor=0
+g_trash_can=0
+g_brush=0
+g_aht30_patch=0
+g_klippe_screen=0
+
+# The oldest version supported
+klipper_oldest_id="938300f3c3cc25448c499a3a8ca5b47b7a6d4fa8"
+# The latest version supported. usually is the latest version of the upstream
+klipper_latest_id="9c84895a09fa408b2838ce85a2540ee7d4eeb117"
+# Klipper supports AHT30 and no longer requires patching after this commit
+aht30_patch_id="1f43be0b8b55d90753578d06ac06356d1ab9a768"
+# The oldest version supported
+ks_oldest_id="b3115f9b9b329642d4dbf0ad225ab065ea3eda80"
+# The latest version supported. usually is the latest version of the upstream
+ks_latest_id="61f7afd1e21f7b022e7a6bfb29992d3c396a5c50"
+
 function nextfilename {
     local name="$1"
     if [ -d "${name}" ]; then
@@ -220,21 +240,24 @@ verify_version() {
 
     if [ -d "${dir}" ]; then
         local commit_id=$(git -C "${dir}" log -n 1 --pretty=%H)
-        local err_oldest=0
-        local err_lastest=0
+        local err_oldest=""
+        local err_lastest=""
 
         if ! git -C "${dir}" merge-base --is-ancestor "${oldest}" "${commit_id}"; then
-            err_oldest=1
-        fi
-        if ! git -C "${dir}" merge-base --is-ancestor "${commit_id}" "${latest}"; then
-            err_lastest=1
+            err_oldest="Too ${PURPLE}old${WARNING} version "
         fi
 
-        if [ "${err_oldest}" == 1 ] || [ "${err_lastest}" == 1 ]; then
+        if git -C "${dir}" rev-parse --verify "${latest}" >/dev/null; then
+            if ! git -C "${dir}" merge-base --is-ancestor "${commit_id}" "${latest}"; then
+                err_lastest="Too ${PURPLE}new${WARNING} version "
+            fi
+        fi
+
+        if [ ! -z "${err_oldest}" ] || [ ! -z "${err_lastest}" ]; then
             local commit_id=$(git -C ${dir} describe --tags)
             echo -e "${WARNING}${SECTION}Your ${name} version is: ${PURPLE}${commit_id}${WARNING}
 not between ${PURPLE}${oldest}${WARNING} and ${PURPLE}${latest}${WARNING}
-may not be suitable, it is best to update ${name} version as suggested.${INPUT}"
+${err_oldest}${err_lastest}may not be suitable, it is best to update ${name} version as suggested.${INPUT}"
             yn=$(prompt_yn "I confirm that this version of ${name} is compatible with ViViD.")
             echo
             if [ "$yn" = "n" ]; then
@@ -246,9 +269,12 @@ may not be suitable, it is best to update ${name} version as suggested.${INPUT}"
 
 verify_home_dirs() {
     if [ -d "${KLIPPER_HOME}" ]; then
-        local klipper_oldest_id="938300f3c3cc25448c499a3a8ca5b47b7a6d4fa8"
-        local klipper_latest_id="938300f3c3cc25448c499a3a8ca5b47b7a6d4fa8"
         verify_version "Klipper" "${KLIPPER_HOME}" "${klipper_oldest_id}" "${klipper_latest_id}"
+
+        local commit_id=$(git -C "${KLIPPER_HOME}" log -n 1 --pretty=%H)
+        if ! git -C "${KLIPPER_HOME}" merge-base --is-ancestor "${aht30_patch_id}" "${commit_id}"; then
+            g_aht30_patch=1
+        fi
     else
         echo -e "${ERROR}Klipper home directory (${PURPLE}${KLIPPER_HOME}${ERROR}) not found."
         abort
@@ -260,19 +286,9 @@ verify_home_dirs() {
     fi
 
     if [ -d "${ks_dir}" ]; then
-        local ks_oldest_id="b3115f9b9b329642d4dbf0ad225ab065ea3eda80"
-        local ks_latest_id="61f7afd1e21f7b022e7a6bfb29992d3c396a5c50"
         verify_version "KlipperScreen" "${ks_dir}" "${ks_oldest_id}" "${ks_latest_id}"
     fi
 }
-
-g_vivid_id=""
-g_buffer_id=""
-g_cutter=0
-g_entry_sensor=0
-g_trash_can=0
-g_brush=0
-g_klippe_screen=0
 
 set_serial_id() {
     mapfile -t OPTIONS < <(ls /dev/serial/by-id/ 2>/dev/null)
@@ -428,17 +444,21 @@ BIT_MAX_TIME=.000030
             }' "${neopixel}"
             echo -e "${INFO}ViViD ${PURPLE}${neopixel}${INFO} patch completed!"
         else
-            echo -e "${WARNING}ViViD ${PURPLE}${aht30}${INFO} not patched!"
+            echo -e "${WARNING}ViViD ${PURPLE}${neopixel}${INFO} not patched!"
         fi
 
         # patch aht30
-        if [[ -f "${aht30}" ]]; then
-            sed -i '/^[[:space:]]*'"'"'INIT'"'"'[[:space:]]*:[[:space:]]*\[0xE1, 0x08, 0x00\],/ { s/^/# /; a\
-    '"'"'INIT'"'"'              :[0xBE, 0x08, 0x00],
-            }' "${aht30}"
-            echo -e "${INFO}ViViD ${PURPLE}${aht30}${INFO} patch completed!"
-        else
-            echo -e "${WARNING}ViViD ${PURPLE}${aht30}${INFO} not patched!"
+        if [ "${g_aht30_patch}" == 1 ]; then
+            if [[ -f "${aht30}" ]]; then
+                sed -i '/^[[:space:]]*'"'"'INIT'"'"'[[:space:]]*:[[:space:]]*\[0xE1, 0x08, 0x00\],/ { s/^/# /; a\
+        '"'"'INIT'"'"'              :[0xBE, 0x08, 0x00],
+                }' "${aht30}"
+                echo -e "${INFO}ViViD ${PURPLE}${aht30}${INFO} patch completed!"
+            else
+                echo -e "${WARNING}ViViD ${PURPLE}${aht30}${INFO} not patched!"
+            fi
+            local aht30_cfg="${KLIPPER_CONFIG_HOME}/sample-bigtreetech-mms/hardware/mms-heater.cfg"
+            sed -i 's/sensor_type: AHT3X/sensor_type: AHT10/g' "${aht30_cfg}"
         fi
 
         echo -e "${INFO}ViViD for klipper installation completed!"
@@ -461,10 +481,12 @@ uninstall_klippy() {
             echo -e "${INFO}ViViD ${PURPLE}${neopixel}${INFO} unpatched!"
         fi
         # unpatch aht30
-        if [[ -f "${aht30}" ]]; then
-            sed -i '/^#\s*'\''INIT'\''\s*:\[0xE1, 0x08, 0x00\],$/ s/^# //'  "${aht30}"
-            sed -i '/^[[:space:]]*'\''INIT'\''[[:space:]]*:[[:space:]]*\[0xBE, 0x08, 0x00\],$/d' "${aht30}"
-            echo -e "${INFO}ViViD ${PURPLE}${aht30}${INFO} unpatched!"
+        if [ "${g_aht30_patch}" == 1 ]; then
+            if [[ -f "${aht30}" ]]; then
+                sed -i '/^#\s*'\''INIT'\''\s*:\[0xE1, 0x08, 0x00\],$/ s/^# //'  "${aht30}"
+                sed -i '/^[[:space:]]*'\''INIT'\''[[:space:]]*:[[:space:]]*\[0xBE, 0x08, 0x00\],$/d' "${aht30}"
+                echo -e "${INFO}ViViD ${PURPLE}${aht30}${INFO} unpatched!"
+            fi
         fi
         echo -e "${INFO}ViViD for klipper uninstallation completed!"
     else
