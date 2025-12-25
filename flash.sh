@@ -82,7 +82,7 @@ abort(){
     if [ ! $# -eq 0 ]; then
         echo -e "${ERROR}$1${INPUT}"
     fi
-    echo -e "${ERROR}Installation has been aborted!${INPUT}"
+    echo -e "${ERROR}Flash has been aborted!${INPUT}"
     exit -1
 }
 
