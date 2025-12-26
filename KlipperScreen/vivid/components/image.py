@@ -53,3 +53,27 @@ class VividImage(Gtk.Image):
             logging.error(str(e))
             return None
 
+    def update_image_file(self, new_file_name):
+        config = ImageConfig()
+        new_file_full_path = os.path.join(config.resource_path, new_file_name)
+
+        if not os.path.exists(new_file_full_path):
+            logging.error(f"Image not found: {new_file_full_path}")
+            return False
+
+        self.file_full_path = new_file_full_path
+        return self._refresh_image()
+
+    def update_image_size(self, new_width, new_height):
+        self.width = int(new_width)
+        self.height = int(new_height)
+        return self._refresh_image()
+
+    def _refresh_image(self):
+        pixbuf = self._create_pixbuf()
+        if not pixbuf:
+            return False
+
+        self.set_from_pixbuf(pixbuf)
+        self.queue_draw()
+        return True

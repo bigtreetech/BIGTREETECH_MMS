@@ -30,8 +30,9 @@ class ToolheadAdapter(BaseAdapter):
     def _setup_logger(self):
         mms_logger = printer_adapter.get_mms_logger()
         self.log_info = mms_logger.create_log_info(console_output=True)
-        self.log_warning = mms_logger.create_log_warning(console_output=True)
+        self.log_warning = mms_logger.create_log_warning(console_output=False)
         self.log_error = mms_logger.create_log_error(console_output=True)
+        self.log_info_s = mms_logger.create_log_info(console_output=False)
 
     def _get_toolhead(self):
         return self.safe_get(self._obj_name)
@@ -184,7 +185,7 @@ class ToolheadAdapter(BaseAdapter):
 
     def log_snapshot(self, snapshot=None):
         snapshot = snapshot or self._format_snapshot()
-        self.log_info(
+        self.log_info_s(
             "\n"
             "current toolhead snapshot:\n"
             "toolhead position - "
@@ -203,7 +204,7 @@ class ToolheadAdapter(BaseAdapter):
             return False
 
         self._snapshot = self._format_snapshot()
-        self.log_info("new toolhead snapshot saved:")
+        self.log_info_s("new toolhead snapshot saved:")
         self.log_snapshot(self._snapshot)
         return True
 
@@ -219,7 +220,7 @@ class ToolheadAdapter(BaseAdapter):
             return False
 
         if print_stats_adapter.is_paused_or_finished():
-            self.log_info("print is paused or finished")
+            self.log_info_s("print is paused or finished")
             self.truncate_snapshot()
             return True
 
@@ -239,15 +240,15 @@ class ToolheadAdapter(BaseAdapter):
         target_temp = self._snapshot.get("extruder_target_temp")
         current_temp = self.get_extruder_heater_temp()
         if target_temp > current_temp:
-            self.log_info(
+            self.log_info_s(
                 f"current temp: {current_temp:.2f}, "
-                f"resume extruder saved target_temp: {target_temp:.2f}\n")
+                f"resume extruder saved target_temp: {target_temp:.2f}")
             # Heat to snapshot temp
-            self.set_extruder_temperature(target_temp, wait=True)
+            self.set_extruder_temperature(target_temp, wait=False)
         elif target_temp < current_temp and not ignore_cool_down:
-            self.log_info(
+            self.log_info_s(
                 f"current temp: {current_temp:.2f}, "
-                f"cooldown extruder to saved target_temp: {target_temp:.2f}\n")
+                f"cooldown extruder to saved target_temp: {target_temp:.2f}")
             # Cooldown to snapshot temp
             self.set_extruder_temperature(target_temp, wait=True)
 
@@ -255,7 +256,7 @@ class ToolheadAdapter(BaseAdapter):
         fan_speed = self._snapshot.get("fan_speed")
         fan_adapter.set_speed(fan_speed)
 
-        self.log_info("saved toolhead snapshot restore:")
+        self.log_info_s("saved toolhead snapshot restore:")
         self.log_snapshot(self._snapshot)
 
         # Finally truncate saved state
@@ -268,7 +269,7 @@ class ToolheadAdapter(BaseAdapter):
                 "no toolhead snapshot found, truncate failed")
             return False
         self._snapshot = None
-        self.log_info("saved toolhead snapshot is truncated")
+        self.log_info_s("saved toolhead snapshot is truncated")
         return True
 
     @contextmanager
@@ -290,7 +291,7 @@ class ToolheadAdapter(BaseAdapter):
             )
 
         self._resume_target_temp = target_temp
-        self.log_info(f"new resume target_temp saved: {target_temp:.2f}")
+        self.log_info_s(f"new resume target_temp saved: {target_temp:.2f}")
 
     def restore_target_temp(self):
         if not self._resume_target_temp:
@@ -301,9 +302,9 @@ class ToolheadAdapter(BaseAdapter):
         target_temp = self._resume_target_temp
         current_temp = self.get_extruder_heater_temp()
         if target_temp > current_temp:
-            self.log_info(
+            self.log_info_s(
                 f"current temp:{current_temp:.2f}, "
-                f"restore saved target_temp :{target_temp:.2f}\n")
+                f"restore saved target_temp :{target_temp:.2f}")
             # Heat to snapshot temp
             self.set_extruder_temperature(target_temp, wait=True)
         elif target_temp < current_temp:

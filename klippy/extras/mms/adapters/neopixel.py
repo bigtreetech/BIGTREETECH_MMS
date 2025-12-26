@@ -15,7 +15,7 @@ class NeopixelAdapter(BaseAdapter):
 
     def _setup_logger(self):
         mms_logger = printer_adapter.get_mms_logger()
-        self.log_error = mms_logger.create_log_error(console_output=True)
+        self.log_error_s = mms_logger.create_log_error(console_output=False)
 
     def _get_neopixel(self):
         return self.safe_get(self.led_name)
@@ -32,8 +32,7 @@ class NeopixelAdapter(BaseAdapter):
             self._get_neopixel().update_leds(
                 led_state=color_data, print_time=None)
         except Exception as e:
-            # self.log_error(f"mms neopixel update error: {e}")
-            pass
+            self.log_error_s(f"mms neopixel update error: {e}")
 
 
 class NeopixelDispatch:

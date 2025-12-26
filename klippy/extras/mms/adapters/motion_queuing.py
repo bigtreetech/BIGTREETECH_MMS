@@ -43,6 +43,10 @@ class MotionQueuingAdapter(BaseAdapter):
         return self._get_motion_queuing().\
             flush_all_steps()
 
+    def drip_update_time(self, start_time, end_time, drip_completion):
+        return self._get_motion_queuing().\
+            drip_update_time(start_time, end_time, drip_completion)
+
     # ---- Advanced trapq control ----
     def setup_trapq(self, trapq, print_time, distance, speed, accel):
         """Configure trap queue with movement parameters"""

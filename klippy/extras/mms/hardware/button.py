@@ -45,9 +45,8 @@ class MMSButton:
 
     def _initialize_state(self):
         """Initialize state tracking variables"""
-        bs = ButtonState()
-        self.state_trigger = bs.trigger
-        self.state_release = bs.release
+        self.state_trigger = ButtonState().trigger
+        self.state_release = ButtonState().release
 
         # Current state
         # Init state for button, default is released
@@ -81,9 +80,10 @@ class MMSButton:
             self.release()
 
     def _initialize_loggers(self):
-        mms_logger = printer_adapter.get_mms_logger()
-        self.log_info = mms_logger.create_log_info()
-        self.log_warning = mms_logger.create_log_warning()
+        return
+        # mms_logger = printer_adapter.get_mms_logger()
+        # self.log_info = mms_logger.create_log_info(console_output=False)
+        # self.log_warning = mms_logger.create_log_warning()
 
     # ==== Configuration ====
     def register_trigger_callback(self, callback, params=None):

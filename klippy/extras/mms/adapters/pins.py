@@ -30,6 +30,7 @@ class PinsAdapter(BaseAdapter):
     def allow_multi_use_pin(self, mcu_pin):
         pin_desc = mcu_pin[1:] if mcu_pin.startswith("!") else mcu_pin
         self._get_pins().allow_multi_use_pin(pin_desc)
+        # self._get_pins().allow_multi_use_pin(mcu_pin)
 
     def get_pin_params(self, mcu_pin):
         # self._get_pins().parse_pin(mcu_pin, can_invert=True, can_pullup=True)

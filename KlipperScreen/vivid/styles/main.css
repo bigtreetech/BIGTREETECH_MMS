@@ -228,6 +228,14 @@ margin: top right bottom left;
     margin: 0.5em 0.5em 1em 1em;
 }
 
+.vvd-stop-heat-btn {
+    background-color: var(--primary-color);
+    border-radius: var(--border-radius-main);
+    border-bottom: var(--btn-border-bottom);
+    border-bottom-color: var(--color-dark-red);
+    margin: 1em 0.5em 1em 0.5em;
+}
+
 /* ========================================= */
 .vvd-mms-area {
     margin: 0.3em 1em 1em 0.5em;

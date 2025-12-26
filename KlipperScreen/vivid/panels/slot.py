@@ -238,19 +238,19 @@ class Panel(ScreenPanel):
         # Create action buttons with consistent styling
         self.buttons = {
             "select": self.create_slot_action_button(
-                "vivid_select", "SELECT", color, f"MMS_SELECT SLOT={slot_num}"
+                "vivid_select", "Select", color, f"MMS_SELECT_U SLOT={slot_num}"
             ),
             "load": self.create_slot_action_button(
-                "vivid_load", "EXTRUDER", color, f"MMS_LOAD SLOT={slot_num}"
+                "vivid_load", "Extruder", color, f"MMS_LOAD_U SLOT={slot_num}"
             ),
             "prepare": self.create_slot_action_button(
-                "vivid_prepare", "BUFFER", color, f"MMS_PREPARE SLOT={slot_num}"
+                "vivid_prepare", "Buffer", color, f"MMS_PREPARE_U SLOT={slot_num}"
             ),
             "pop": self.create_slot_action_button(
-                "vivid_pop", "INLET", color, f"MMS_POP SLOT={slot_num}"
+                "vivid_pop", "Inlet", color, f"MMS_POP_U SLOT={slot_num}"
             ),
-            "semi_autoload": self.create_slot_action_button(
-                "vivid_semi_autoload", "SEMI-AL", color, f"MMS_SEMI_AUTOLOAD SLOT={slot_num}"
+            "pre_load": self.create_slot_action_button(
+                "vivid_pre_load", "Pre-Load", color, f"MMS_PRE_LOAD SLOT={slot_num}"
             )
         }
 
@@ -258,7 +258,7 @@ class Panel(ScreenPanel):
         # Notice always be grid for refresh color
         grid = Gtk.Grid(row_homogeneous=True, column_homogeneous=True)
 
-        for i, button_name in enumerate(["select", "load", "prepare", "pop", "semi_autoload"]):
+        for i, button_name in enumerate(["select", "load", "prepare", "pop", "pre_load"]):
             # x=0, y=0, width=2, height=1
             grid.attach(self.buttons[button_name], i, 0, 1, 1)
 

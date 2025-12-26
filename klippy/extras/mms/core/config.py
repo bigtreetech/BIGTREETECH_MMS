@@ -45,10 +45,35 @@ class PrinterConfig:
             # Custom type
             PointType: lambda config, name: PointType.parse(config.get(name)),
             PointsType: lambda config, name: PointsType.parse(config.get(name)),
+            StringList: lambda config, name: StringList.parse(config.get(name)),
         }
 
     def should_skip(self, config_key):
         return config_key in self.skip_configs
+
+    # def extend_skip_keys(self, skip_keys):
+    #     self.skip_configs.extend(skip_keys)
+
+    def gen_packaged_config(self):
+        class PConfig:
+            pass
+        p_config = PConfig()
+        for field in fields(self):
+            key = field.name
+            if not self.should_skip(key) \
+                and not hasattr(p_config, key):
+                val = getattr(self, key)
+                setattr(p_config, key, val)
+        return p_config
+
+
+class OptionalField:
+    @staticmethod
+    def parse(config, name):
+        """
+        Always get()
+        """
+        return config.get(name, None)
 
 
 class PointsType:
@@ -89,10 +114,13 @@ class PointType:
         return p_lst[0] if p_lst else None
 
 
-class OptionalField:
+class StringList:
     @staticmethod
-    def parse(config, name):
+    def parse(val_string):
         """
-        Always get()
+        Example:
+            "1,2,3,4"
         """
-        return config.get(name, None)
+        val_string = val_string or ""
+        lst = [val.strip() for val in val_string.split(",")]
+        return lst

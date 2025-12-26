@@ -19,7 +19,8 @@ from vivid.components.utils import convert_css_to_gtk3
 
 @dataclass(frozen=True)
 class VividPanelConfig:
-    version: str = "0.2.0005"
+    version: str = "0.2.0009"
+    welcome: str = "*"*10 + f" KlipperScreen for VVD/MMS Ver {version} Start up! " + "*"*10
     panel_prefix: str = "vivid/panels/"
 
 
@@ -49,7 +50,7 @@ def _advanced_load_panels(base_panel):
     org_load_panel = base_panel._screen._load_panel
 
     def _load_panel(panel):
-        if panel.startswith(VividPanelConfig().panel_prefix):
+        if panel.startswith(VividPanelConfig.panel_prefix):
             logging.debug(f"Loading panel: {panel}")
 
             panel_filename = panel.split(os.path.sep)[-1]
@@ -138,7 +139,7 @@ def _setup_action_bar(base_panel):
 
 def _click_vivid(widget, base_panel):
     # "panel": "vivid/panels/main"
-    main_panel = VividPanelConfig().panel_prefix + "main"
+    main_panel = VividPanelConfig.panel_prefix + "main"
     base_panel._screen.show_panel(main_panel)
 
 
@@ -153,4 +154,4 @@ def install_vivid(base_panel):
     base_panel = _advanced_load_panels(base_panel)
     base_panel = _add_vivid_style(base_panel)
     _setup_action_bar(base_panel)
-
+    logging.info(VividPanelConfig.welcome)

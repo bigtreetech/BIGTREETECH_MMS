@@ -39,11 +39,14 @@ class GCodeAdapter(BaseAdapter):
     #     if script:
     #         self._get_gcode().run_script(script)
 
-    def easy_gcmd(self, params=None):
-        params_dct = {} if params is None else params
+    def easy_gcmd(self, command=None, params=None):
+        # params_dct = {} if params is None else params
         return GCodeCommand(
-            gcode=self._get_gcode(), command="", commandline="",
-            params=params_dct, need_ack=False
+            gcode=self._get_gcode(),
+            command=command or "",
+            commandline="",
+            params=params or {},
+            need_ack=False
         )
 
     def console_print(self, msg, log=False):

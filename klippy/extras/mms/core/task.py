@@ -50,7 +50,8 @@ class AsyncTask:
     def _initialize_loggers(self):
         if not self.mms_logger:
             self.mms_logger = printer_adapter.get_mms_logger()
-            self.log_info = self.mms_logger.create_log_info()
+            self.log_info = self.mms_logger.create_log_info(
+                console_output=False)
             self.log_warning = self.mms_logger.create_log_warning()
             self.log_error = self.mms_logger.create_log_error()
 
@@ -219,7 +220,8 @@ class PeriodicTask:
     def _initialize_loggers(self):
         if not self.mms_logger:
             self.mms_logger = printer_adapter.get_mms_logger()
-            self.log_info = self.mms_logger.create_log_info()
+            self.log_info = self.mms_logger.create_log_info(
+                console_output=False)
             self.log_warning = self.mms_logger.create_log_warning()
             self.log_error = self.mms_logger.create_log_error()
 

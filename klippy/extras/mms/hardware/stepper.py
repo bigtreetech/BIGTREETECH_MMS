@@ -37,17 +37,12 @@ class StepperConfig:
     # Delay before reset stepcompress in soft_stop(), in seconds
     # soft_stop_delay: float = 0.15
 
-    # Default segment of drip_move
-    drip_segment: float = 0.5
-    # Selector drip_segment can be more lower
-    selector_drip_segment: float = 0.2
-    drive_drip_segment: float = 0.2
-
 
 @dataclass(frozen=True)
 class MoveType:
     MANUAL_MOVE: str = "manual_move"
     MANUAL_HOME: str = "manual_home"
+    DRIP_MOVE: str = "drip_move"
 
 
 @dataclass(frozen=True)
@@ -89,9 +84,9 @@ class MoveDispatch:
 
     def _initialize_loggers(self):
         mms_logger = printer_adapter.get_mms_logger()
-        self.log_info = mms_logger.create_log_info()
-        self.log_warning = mms_logger.create_log_warning()
-        self.log_error = mms_logger.create_log_error()
+        self.log_info = mms_logger.create_log_info(console_output=False)
+        # self.log_warning = mms_logger.create_log_warning()
+        self.log_error = mms_logger.create_log_error(console_output=True)
 
     def execute(self, *args, **kwargs):
         """Execute the movement"""
@@ -185,17 +180,18 @@ class ManualMoveDispatch(MoveDispatch):
             self._recover_trapq(prev_trapq)
             self._update_tracking()
 
-    def terminate(self, result=False):
-        return
-
 
 class ManualHomeDispatch(MoveDispatch):
     def __init__(self, stepper):
         super().__init__(stepper)
         self.move_type = MoveType.MANUAL_HOME
+        self.mcu_pin_lst = []
 
     def execute(self, distance, speed, accel, trigger, endstop_pair_lst):
+        # endstop_pair_lst: [(muc_pin, endstop_name)]
+        self.mcu_pin_lst = [tup[1] for tup in endstop_pair_lst]
         self._prepare_tracking()
+
         try:
             ms_adapter = manual_stepper_dispatch.get_adapter(
                 self.stepper.get_name())
@@ -229,6 +225,56 @@ class ManualHomeDispatch(MoveDispatch):
             self.log_error(f"{self.move_type} error: {str(e)}")
         finally:
             self._update_tracking()
+            # Truncate mcu_pin list
+            self.mcu_pin_lst = []
+
+    def is_destination(self, mcu_pin):
+        return mcu_pin in self.mcu_pin_lst
+
+
+class DripMoveDispatch(MoveDispatch):
+    def __init__(self, stepper):
+        super().__init__(stepper)
+        self.move_type = MoveType.DRIP_MOVE
+        self._drip_completion = None
+
+    def execute(self, print_time, distance, speed, accel):
+        # Save original trapq and replace with ours
+        prev_trapq = self._replace_trapq()
+        self._prepare_tracking()
+        try:
+            # Setup move jobs in trapq, return end_print_time
+            end_print_time = motion_queuing_a.setup_trapq(
+                self.trapq, print_time, distance, speed, accel
+            )
+            # Setup reactor completion
+            self._drip_completion = self.reactor.completion()
+            # Mark beginning
+            begin_at = self._query_current()
+
+            # Drip updates to motors, move begin
+            motion_queuing_a.drip_update_time(
+                print_time, end_print_time, self._drip_completion
+            )
+            # Move finish, clear remaining movement in trapq
+            motion_queuing_a.wipe_trapq(self.trapq)
+            # Truncate reactor completion
+            self._drip_completion = None
+
+            # Calculate duration
+            duration = self._query_current() - begin_at
+            # Return exactly end_print_time
+            return min(print_time+duration, end_print_time)
+
+        except Exception as e:
+            self.log_error(f"{self.move_type} error: {str(e)}")
+        finally:
+            self._recover_trapq(prev_trapq)
+            self._update_tracking()
+
+    def terminate(self, result=True):
+        if self._drip_completion:
+            self._drip_completion.complete(result)
 
 
 # ------------------------------
@@ -242,7 +288,6 @@ class MMSStepper:
 
         # Configuration
         self.s_config = StepperConfig()
-        self.drip_segment = self.s_config.drip_segment
 
         # State management
         self.mms_name = None
@@ -265,6 +310,7 @@ class MMSStepper:
         self.move_dispatch_dct = {
             MoveType.MANUAL_MOVE: ManualMoveDispatch(self),
             MoveType.MANUAL_HOME: ManualHomeDispatch(self),
+            MoveType.DRIP_MOVE: DripMoveDispatch(self),
         }
 
         # Register connect handler to printer
@@ -276,9 +322,9 @@ class MMSStepper:
 
     def _initialize_loggers(self):
         mms_logger = printer_adapter.get_mms_logger()
-        self.log_info = mms_logger.create_log_info()
-        self.log_warning = mms_logger.create_log_warning()
-        self.log_error = mms_logger.create_log_error()
+        self.log_info = mms_logger.create_log_info(console_output=False)
+        self.log_warning = mms_logger.create_log_warning(console_output=False)
+        # self.log_error = mms_logger.create_log_error()
 
     def is_running(self):
         return self._is_running
@@ -434,9 +480,6 @@ class MMSStepper:
     def set_trapq(self, trapq):
         return self.get_mcu_stepper().set_trapq(trapq)
 
-    def get_drip_segment(self):
-        return self.drip_segment
-
     def move_is_completed(self, move_status=None):
         move_status = move_status or self.move_status
         return move_status == MoveStatus.COMPLETED
@@ -448,6 +491,13 @@ class MMSStepper:
     def move_is_error(self, move_status=None):
         move_status = move_status or self.move_status
         return move_status == MoveStatus.ERROR
+
+    def is_homing_to(self, mcu_pin):
+        mt_home = MoveType.MANUAL_HOME
+        dispatch = self.get_dispatch(mt_home)
+        return self.move_status is MoveStatus.MOVING \
+            and self.move_type is mt_home \
+            and dispatch.is_destination(mcu_pin)
 
     # ---- Control ----
     def _cal_enable_print_time(self):
@@ -529,7 +579,8 @@ class MMSStepper:
             float: The final estimated print time.
         """
         print_time = self.get_mcu().estimated_print_time(
-            self.reactor.monotonic())
+            self.reactor.monotonic()
+        )
         if add_interval:
             print_time += self.s_config.interval_time
         return print_time
@@ -574,15 +625,6 @@ class MMSStepper:
                     print_time, distance, speed, accel)
                 # self.log_status()
 
-    def terminate_manual_move(self):
-        if not self._is_running:
-            self.log_warning(
-                f"[{self.mms_name}] is not running, terminate failed")
-            return
-
-        self.get_dispatch(MoveType.MANUAL_MOVE).terminate()
-        self._update_move_status(MoveStatus.TERMINATED)
-
     # -- Manual Home --
     def manual_home(
         self, distance, speed, accel, forward, trigger, endstop_pair_lst
@@ -617,7 +659,9 @@ class MMSStepper:
     def complete_manual_home(self):
         if not self._is_running:
             self.log_warning(
-                f"[{self.mms_name}] is not running, complete failed")
+                f"[{self.mms_name}] is not running, "
+                "complete failed"
+            )
             return
         self._update_move_status(MoveStatus.COMPLETED)
 
@@ -632,29 +676,36 @@ class MMSStepper:
     def can_calibrate(self):
         return self._can_calibrate
 
-    # ---- Terminate ----
-    def terminate(self):
-        return
-        # if not self._is_running:
-        #     self.log_warning(
-        #         f"[{self.mms_name}] is not running, terminate failed")
-        #     return
+    # -- Drip Move --
+    def drip_move(self, distance, speed, accel):
+        mv_type = MoveType.DRIP_MOVE
+        self._forward = True if distance >= 0 else False
 
-        # if self.move_type == MoveType.MANUAL_MOVE:
-        #     self.terminate_manual_move()
-        # elif self.move_type == MoveType.MANUAL_HOME:
-        #     self.terminate_manual_home()
+        with self._stepper_is_running(mv_type) as can_run:
+            if can_run:
+                print_time = self._adjust_print_time()
+                dispatch = self.get_dispatch(mv_type)
+                self._end_print_time = dispatch.execute(
+                    print_time, distance, speed, accel)
+
+    def terminate_drip_move(self):
+        if not self._is_running:
+            self.log_warning(
+                f"[{self.mms_name}] is not running, "
+                "terminate failed"
+            )
+            return
+        self.get_dispatch(MoveType.DRIP_MOVE).terminate()
+        self._update_move_status(MoveStatus.TERMINATED)
 
 
 class MMSSelector(MMSStepper):
     def __init__(self, name):
         super().__init__(name)
-        self.drip_segment = self.s_config.selector_drip_segment
         self.mms_name = "Selector"
 
 
 class MMSDrive(MMSStepper):
     def __init__(self, name):
         super().__init__(name)
-        self.drip_segment = self.s_config.drive_drip_segment
         self.mms_name = "Drive"

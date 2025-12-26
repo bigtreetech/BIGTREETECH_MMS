@@ -63,7 +63,7 @@ class PrinterBrushConfig(PrinterConfig):
     # Unit: mm
     peck_depth: float = 2.0
     # Number of pecking cycles on the brush
-    peck_times: int = 3
+    peck_times: int = 0
 
     # Custom Macro
     custom_before: OptionalField = "MMS_BRUSH_CUSTOM_BEFORE"
@@ -110,9 +110,10 @@ class MMSBrush:
         self.log_info = mms_logger.create_log_info(console_output=True)
         self.log_warning = mms_logger.create_log_warning(console_output=True)
         self.log_error = mms_logger.create_log_error(console_output=True)
+        self.log_info_s = mms_logger.create_log_info(console_output=False)
 
     # ---- Status ----
-    def is_enable(self):
+    def is_enabled(self):
         return bool(self.enable)
 
     def is_running(self):
@@ -235,15 +236,15 @@ class MMSBrush:
                 f"MMS execute macro before BRUSH: {self.custom_before}")
             gcode_adapter.run_command(self.custom_before)
 
-        if not self.is_enable():
-            self.log_info("MMS BRUSH is disabled, skip...")
+        if not self.is_enabled():
+            self.log_info_s("MMS BRUSH is disabled, skip...")
             return True
 
         if not self._safety_checks():
             return False
 
         log_prefix = f"slot[*] brush"
-        self.log_info(f"{log_prefix} begin")
+        self.log_info_s(f"{log_prefix} begin")
 
         with toolhead_adapter.fan_cooldown(
                 speed = self.fan_cooldown_speed,
@@ -257,7 +258,7 @@ class MMSBrush:
                 self.log_warning(f"{log_prefix} failed")
                 return False
 
-        self.log_info(f"{log_prefix} finish")
+        self.log_info_s(f"{log_prefix} finish")
 
         if self.custom_before:
             self.log_info(
@@ -268,19 +269,11 @@ class MMSBrush:
 
     # ---- GCode ----
     def cmd_MMS_BRUSH(self, gcmd=None):
-        if not self.mms.cmd_can_exec():
-            self.log_warning("MMS_BRUSH can not execute now")
-            return False
-
         with toolhead_adapter.snapshot():
             with toolhead_adapter.safe_z_raise(self.z_raise):
                 self.mms_brush()
 
     def cmd_MMS_BRUSH_WIPE(self, gcmd=None):
-        if not self.mms.cmd_can_exec():
-            self.log_warning("MMS_BRUSH_WIPE can not execute now")
-            return False
-
         if self.is_running():
             self.log_warning("another brush is running, return")
             return False
@@ -294,10 +287,6 @@ class MMSBrush:
                     self.wipe()
 
     def cmd_MMS_BRUSH_PECK(self, gcmd=None):
-        if not self.mms.cmd_can_exec():
-            self.log_warning("MMS_BRUSH_PECK can not execute now")
-            return False
-
         if self.is_running():
             self.log_warning("another brush is running, return")
             return False

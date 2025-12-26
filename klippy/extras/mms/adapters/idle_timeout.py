@@ -57,7 +57,7 @@ class IdleTimeoutCallbackManager:
 
     def _initialize_loggers(self):
         mms_logger = printer_adapter.get_mms_logger()
-        self.log_info = mms_logger.create_log_info()
+        self.log_info = mms_logger.create_log_info(console_output=False)
         self.log_error = mms_logger.create_log_error()
 
     def _handle_busy(self, print_time):

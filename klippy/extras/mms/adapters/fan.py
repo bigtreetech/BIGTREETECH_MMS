@@ -26,7 +26,10 @@ class FanAdapter(BaseAdapter):
     def set_speed(self, speed):
         # M106 S{fan * 255}
         self._get_fan().cmd_M106(
-            gcode_adapter.easy_gcmd({"S":speed * 255})
+            gcode_adapter.easy_gcmd(
+                command = "M106",
+                params = {"S":speed * 255}
+            )
         )
 
     def pause(self):

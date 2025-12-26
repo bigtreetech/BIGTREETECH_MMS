@@ -76,6 +76,8 @@ class PrinterPurgeConfig(PrinterConfig):
     nozzle_priming_speed: float = 600.0
 
     # Pressure pulse cleaning
+    # 0 = disable, 1 = enable
+    pulse_clean_enable: int = 0
     # Unit: second
     pulse_rest_time: float = 0.1
     pulse_count: int = 4
@@ -138,10 +140,10 @@ class MMSPurge:
         self.log_warning = mms_logger.create_log_warning(console_output=True)
         self.log_error = mms_logger.create_log_error(console_output=True)
         # Log would not output to console
-        self.log_info_silent = mms_logger.create_log_info()
+        self.log_info_s = mms_logger.create_log_info(console_output=False)
 
     # ---- Status ----
-    def is_enable(self):
+    def is_enabled(self):
         return bool(self.enable)
 
     def is_running(self):
@@ -155,9 +157,15 @@ class MMSPurge:
         finally:
             self._is_running = False
 
+    def get_purge_speed(self):
+        return self.purge_speed
+
+    def get_purge_distance(self):
+        return self.orphan_filament_length * self.purge_modifier
+
     # ---- MMS Buffer control ----
     def _pause_mms_buffer(self, slot_num):
-        mms_slot = self.mms.get_slot(slot_num)
+        mms_slot = self.mms.get_mms_slot(slot_num)
         mms_buffer = mms_slot.get_mms_buffer()
         # Deactivate buffer monitor before
         mms_buffer.deactivate_monitor()
@@ -176,11 +184,10 @@ class MMSPurge:
         mms_buffer = self._pause_mms_buffer(slot_num)
         # Setup volume of buffer
         if not mms_buffer.halfway(slot_num):
-            self.log_warning(
-                f"slot[{slot_num}] halfway buffer failed during purge"
+            raise PurgeFailedError(
+                f"slot[{slot_num}] halfway buffer failed during purge",
+                self.mms.get_mms_slot(slot_num)
             )
-            # return False
-        # return True
 
     # ---- Tray ----
     def move_to_tray(self):
@@ -218,8 +225,17 @@ class MMSPurge:
         return True
 
     def _purge_feed_task(self, slot_num, distance):
+        distance = abs(distance)
         spd = self.purge_speed / 60
-        self.mms_delivery.mms_move(slot_num, abs(distance), spd, spd)
+        # self.mms_delivery.mms_drip_move(slot_num, abs(distance), spd, spd)
+        # self.mms_delivery.mms_move(slot_num, abs(distance), spd, spd)
+        # self.mms_delivery.move_forward(slot_num, abs(distance), spd, spd)
+        mms_slot = self.mms.get_mms_slot(slot_num)
+        mms_drive = mms_slot.get_mms_drive()
+        mms_drive.update_focus_slot(slot_num)
+        # No select method
+        mms_drive.manual_move(distance, spd, spd)
+        self.log_info_s(f"slot[{slot_num}] deliver distance={distance:.2f} mm")
 
     def _async_cold_pull(self, slot_num, distance, speed):
         # Setup and start task in background
@@ -303,12 +319,18 @@ class MMSPurge:
 
     # ---- Toolhead Control ----
     def pressure_pulse_cleaning(self, slot_num):
+        if self.pulse_clean_enable == 0:
+            return
+
         log_prefix = f"slot[{slot_num}] pressure pulse cleaning"
 
         # Clear buffer volume
         mms_buffer = self._pause_mms_buffer(slot_num)
         if not mms_buffer.clear(slot_num):
-            self.log_warning(f"{log_prefix} apply while buffer is not clear")
+            raise PurgeFailedError(
+                f"{log_prefix} failed, mms_buffer is not clear",
+                self.mms.get_mms_slot(slot_num)
+            )
 
         # Calculate
         # Extruder params
@@ -320,7 +342,7 @@ class MMSPurge:
         # Unit: pulse_speed::mm/min -> unload_speed::mm/s
         unload_speed = self.pulse_speed / 60 * 0.5
 
-        self.log_info(f"{log_prefix} begin")
+        self.log_info_s(f"{log_prefix} begin")
 
         # Startup async unload first
         self._async_move_backward(slot_num, unload_dist, unload_speed)
@@ -334,21 +356,24 @@ class MMSPurge:
 
         # Finally wait idle
         self.mms_delivery.wait_mms_selector_and_drive(slot_num)
-        self.log_info(
-            f"{log_prefix} finish,"
-            f" total retracted: {total_retracted_dist:.2f} mm"
+        self.log_info_s(
+            f"{log_prefix} finish"
+            f", total retracted: {total_retracted_dist:.2f} mm"
         )
 
-    def apply_nozzle_priming(self, slot_num):
+    def _apply_nozzle_priming(self, slot_num):
         """Prime nozzle after filament change."""
         mms_buffer = self._pause_mms_buffer(slot_num)
 
         log_prefix = f"slot[{slot_num}] purge with nozzle priming only"
-        self.log_info(f"{log_prefix} begin")
+        self.log_info_s(f"{log_prefix} begin")
 
         # Make sure buffer is halfway
         if not mms_buffer.halfway(slot_num):
-            self.log_warning(f"{log_prefix} while buffer is not halfway")
+            raise PurgeFailedError(
+                f"{log_prefix} failed, mms_buffer is not halfway",
+                self.mms.get_mms_slot(slot_num)
+            )
 
         # distance = min(
         #     abs(self.nozzle_priming_dist),
@@ -360,7 +385,7 @@ class MMSPurge:
 
         self._async_move_forward(slot_num, distance, move_speed)
         extruder_adapter.extrude(distance, self.nozzle_priming_speed)
-        self.log_info(f"{log_prefix}, distance: {distance} mm")
+        self.log_info_s(f"{log_prefix}, distance: {distance} mm")
 
         # Wait async task finish
         self.mms_delivery.wait_mms_selector_and_drive(
@@ -369,26 +394,26 @@ class MMSPurge:
         # Reduces underextrusion after retraction
         # toolhead_adapter.release_pressure()
 
-        self.log_info(f"{log_prefix} finish")
+        self.log_info_s(f"{log_prefix} finish")
 
     def apply_retraction_compensation(self, slot_num):
         """Extruder retract a little bit to decrease nozzle remain."""
         mms_buffer = self._pause_mms_buffer(slot_num)
-
         log_prefix = f"slot[{slot_num}] apply retraction compensation"
-        # self.log_info(f"{log_prefix} begin")
 
         # Make sure buffer is clear
         if not mms_buffer.clear(slot_num):
-            self.log_warning(f"{log_prefix} while buffer is not clear")
-            # return False
+            raise PurgeFailedError(
+                f"{log_prefix} failed, mms_buffer is not clear",
+                self.mms.get_mms_slot(slot_num)
+            )
 
         distance = min(
             abs(self.retraction_compensation),
             mms_buffer.get_spring_stroke()
         )
         extruder_adapter.retract(distance, self.retract_speed)
-        self.log_info(f"{log_prefix}, distance: {distance} mm")
+        self.log_info_s(f"{log_prefix}, distance: {distance} mm")
 
     # ---- Cold pull ----
     def cold_pull(self, slot_num):
@@ -419,10 +444,8 @@ class MMSPurge:
             },
         }
 
-        if not self._prepare_mms_buffer(slot_num):
-            return False
-
-        mms_slot = self.mms.get_slot(slot_num)
+        self._prepare_mms_buffer(slot_num)
+        mms_slot = self.mms.get_mms_slot(slot_num)
         # material_type = mms_slot.get_material_type()
         # solidify_temp = COLD_PULL_TEMP_MAP.get(material_type, 70)
         solidify_temp = 170
@@ -431,7 +454,7 @@ class MMSPurge:
         pull_speed = 1200
         unload_speed = 20 # 1200/60
 
-        self.log_info(f"slot[{slot_num}] cold pull begin")
+        self.log_info_s(f"slot[{slot_num}] cold pull begin")
 
         target_temp = extruder_adapter.get_target_temp()
 
@@ -442,8 +465,8 @@ class MMSPurge:
             ):
             extruder_adapter.set_temperature(solidify_temp, wait=True)
 
-            self.log_info(f"slot[{slot_num}]"
-                          f" solidify wait: {solidify_wait}s...")
+            self.log_info_s(
+                f"slot[{slot_num}] solidify wait: {solidify_wait}s...")
             toolhead_adapter.dwell(delay=solidify_wait)
 
             # Begin async feed
@@ -451,18 +474,18 @@ class MMSPurge:
                                             pull_length, unload_speed)
             if not success:
                 return False
-            self.log_info(f"slot[{slot_num}] async move backward begin")
+            self.log_info_s(f"slot[{slot_num}] async move backward begin")
 
             # Begin extruder retract
             extruder_adapter.retract(pull_length, pull_speed)
 
-        self.log_info(f"slot[{slot_num}] recover temp")
+        self.log_info_s(f"slot[{slot_num}] recover temp")
         # Recover original target temp
         extruder_adapter.set_temperature(target_temp, wait=False)
 
         # Make sure drive stepper is idle
         self.mms_delivery.wait_mms_drive(slot_num)
-        self.log_info(f"slot[{slot_num}] cold pull finish")
+        self.log_info_s(f"slot[{slot_num}] cold pull finish")
 
         return True
 
@@ -489,15 +512,15 @@ class MMSPurge:
 
     def _standard_purge(self, slot_num):
         log_prefix = f"slot[{slot_num}] standard purge"
-        self.log_info(f"{log_prefix} begin")
+        self.log_info_s(f"{log_prefix} begin")
 
-        mms_slot = self.mms.get_slot(slot_num)
+        mms_slot = self.mms.get_mms_slot(slot_num)
         mms_buffer = mms_slot.get_mms_buffer()
 
         # Calculation
-        purge_distance = self.orphan_filament_length * self.purge_modifier
-        purge_volume = (purge_distance
-                        * extruder_adapter.get_extruder_filament_area())
+        purge_distance = self.get_purge_distance()
+        purge_volume = (
+            purge_distance * extruder_adapter.get_extruder_filament_area())
 
         spring_stroke = mms_buffer.get_spring_stroke()
         filament_cross_section = (
@@ -506,16 +529,14 @@ class MMSPurge:
                             - spring_stroke * 0.5)
 
         # Prepare
-        # if not self._prepare_mms_buffer(slot_num):
-        #     return False
         self._prepare_mms_buffer(slot_num)
         self.move_to_tray()
+        self.mms_delivery.mms_select(slot_num)
 
         # Begin async feed
         if not self._async_purge_feed(slot_num, deliver_distance):
             raise PurgeFailedError(
-                f"{log_prefix} async feed failed",
-                mms_slot
+                f"{log_prefix} async feed failed", mms_slot
             )
 
         # Begin extrude
@@ -532,10 +553,7 @@ class MMSPurge:
             ):
             self.apply_retraction_compensation(slot_num)
 
-        # Finally fill buffer full
-        # mms_buffer.fill(slot_num)
-        mms_buffer.halfway(slot_num)
-        self.log_info(f"{log_prefix} finish")
+        self.log_info_s(f"{log_prefix} finish")
 
     def mms_purge(self):
         if self.custom_before:
@@ -548,14 +566,14 @@ class MMSPurge:
             return False
 
         log_prefix = f"slot[{slot_num}] purge"
-        self.log_info(f"{log_prefix} begin")
+        self.log_info_s(f"{log_prefix} begin")
 
         with self._purge_is_running():
             try:
-                if self.is_enable():
+                if self.is_enabled():
                     self._standard_purge(slot_num)
                 else:
-                    self.apply_nozzle_priming(slot_num)
+                    self._apply_nozzle_priming(slot_num)
 
             except PurgeFailedError as e:
                 self.log_warning(f"{log_prefix} failed: {e}")
@@ -564,7 +582,7 @@ class MMSPurge:
                 self.log_error(f"{log_prefix} error: {e}")
                 return False
 
-        self.log_info(f"{log_prefix} finish")
+        self.log_info_s(f"{log_prefix} finish")
 
         if self.custom_after:
             self.log_info(
@@ -574,29 +592,17 @@ class MMSPurge:
         return True
 
     # ---- GCode ----
-    @log_time_cost("log_info_silent")
+    @log_time_cost("log_info_s")
     def cmd_MMS_PURGE(self, gcmd):
-        if not self.mms.cmd_can_exec():
-            self.log_warning("MMS_PURGE can not execute now")
-            return False
-
         with toolhead_adapter.snapshot():
             with toolhead_adapter.safe_z_raise(self.z_raise):
                 self.mms_purge()
 
     def cmd_MMS_TRAY(self, gcmd=None):
-        if not self.mms.cmd_can_exec():
-            self.log_warning("MMS_TRAY can not execute now")
-            return False
-
         with toolhead_adapter.safe_z_raise(self.z_raise):
             self.move_to_tray()
 
     def cmd_MMS_TRAY_EJECT(self, gcmd=None):
-        if not self.mms.cmd_can_exec():
-            self.log_warning("MMS_TRAY_EJECT can not execute now")
-            return False
-
         with toolhead_adapter.snapshot():
             with toolhead_adapter.safe_z_raise(self.z_raise):
                 self.move_to_tray()

@@ -5,8 +5,7 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 
 import json
-from contextlib import contextmanager
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field
 
 from .adapters import (
     gcode_adapter,
@@ -14,8 +13,13 @@ from .adapters import (
     toolhead_adapter
 )
 from .core.buffer import Buffer
+from .core.config import (
+    OptionalField,
+    PrinterConfig,
+    StringList
+)
 from .core.observer import PrintObserver
-from .core.slot import PinType, PinState
+from .core.slot_pin import PinType, PinState
 from .core.task import PeriodicTask
 from .hardware.button import (
     MMSButtonBufferRunout,
@@ -23,42 +27,33 @@ from .hardware.button import (
     MMSButtonOutlet,
 )
 from .hardware.stepper import MMSSelector, MMSDrive
+from .motion.fracture import MMSFilamentFracture
 from .motion.pause import MMSPause
 from .motion.resume import MMSResume
 
 
 @dataclass(frozen=True)
 class MMSConfig:
-    # Must be first line, printer_config is the param of Config object
-    printer_config: object
-
     # Current version
-    version: str = "0.1.0330"
+    version: str = "0.1.0365"
     # Welcome for MMS initail
     welcome: str = "*"*10 + f" MMS Ver {version} Ready for Action! " + "*"*10
 
     # MMS Extend module prefix in Config section
-    mms_extend_prefix = "mms extend"
+    # mms_extend_prefix = "mms extend"
 
     # Log sample related
     # Sample duration seconds = sample_count * sample_period
     sample_count: int = 120
     sample_period: float = 0.5 # second
 
-    # Skip configs use in __post_init__()
-    skip_configs = [
-        "printer_config",
-        "version",
-        "welcome",
-        "mms_extend_prefix",
-        "sample_count",
-        "sample_period",
-    ]
-    # ==== configuration values in *.cfg, must set default  ====
+
+@dataclass(frozen=True)
+class PrinterMMSConfig(PrinterConfig):
+    """ Configuration values in mms.cfg """
     retry_times: int = 3
 
-    slot: str = "0,1,2,3"
-
+    slot: StringList = "0,1,2,3"
     selector_name: str = "selector"
     drive_name: str = "drive"
 
@@ -68,49 +63,11 @@ class MMSConfig:
     # Buffer Runout Pin
     buffer_runout: str = "buffer:PA4"
     # The optional Pin configured for entry_sensor
-    entry_sensor: str = ""
+    entry_sensor: OptionalField = ""
 
     fracture_detection_enable: int = 1
 
-    def __post_init__(self):
-        type_method_map = {
-            int: "getint",
-            float: "getfloat",
-            str: "get",
-        }
-
-        for field_info in fields(self):
-            field_name = field_info.name
-            field_type = field_info.type
-
-            if field_name in self.skip_configs:
-                continue
-
-            if field_name in ("slot",):
-                self._parse_list_field(field_name)
-                continue
-
-            if field_name in ("entry_sensor",):
-                self._parse_optional_field(field_name)
-                continue
-
-            # Default type is int
-            get_method = type_method_map.get(field_type, "getint")
-            config_value = getattr(self.printer_config, get_method)(field_name)
-            object.__setattr__(self, field_name, config_value)
-
-    def _parse_string_list(self, val_str):
-        val_str = val_str or ""
-        lst = [val.strip() for val in val_str.split(",")]
-        return lst
-
-    def _parse_list_field(self, field_name):
-        val = self.printer_config.get(field_name)
-        object.__setattr__(self, field_name, self._parse_string_list(val))
-
-    def _parse_optional_field(self, field_name):
-        val = self.printer_config.get(field_name, None)
-        object.__setattr__(self, field_name, val)
+    slot_substitute_enable: int = 1
 
 
 @dataclass(frozen=True)
@@ -127,7 +84,10 @@ class SlotMetaKey:
 
 class MMS:
     def __init__(self, config):
-        self.mms_config = MMSConfig(config)
+        pm_config = PrinterMMSConfig(config)
+        self.p_mms_config = pm_config.gen_packaged_config()
+
+        self.mms_config = MMSConfig()
         self.pin_type = PinType()
         self.pin_state = PinState()
 
@@ -136,12 +96,10 @@ class MMS:
         self.print_observer = None
 
         self._is_connected = False
-        self.fracture_detection_enable = bool(
-            self.mms_config.fracture_detection_enable)
 
-        self.slot_num_lst = [int(num) for num in self.mms_config.slot]
+        self.slot_num_lst = [int(num) for num in self.p_mms_config.slot]
         # Slot object list
-        self.slots = []
+        self.mms_slots = []
         # List to store mms_extend
         self.mms_extends = []
         # List to store mms_buffer
@@ -184,30 +142,31 @@ class MMS:
         )
         # Common pin outlet for slots
         self._parse_outlet(
-            self.mms_config.outlet,
+            self.p_mms_config.outlet,
             self.slot_num_lst
         )
         # Common pin buffer_runout for slots
         self._parse_buffer_runout(
-            self.mms_config.buffer_runout,
+            self.p_mms_config.buffer_runout,
             self.slot_num_lst
         )
         # Common pin entry for slots
         self._parse_entry(
-            self.mms_config.entry_sensor
+            self.p_mms_config.entry_sensor
         )
         # Setup MMS Steppers
         self._parse_mms_selector(
-            self.mms_config.selector_name,
+            self.p_mms_config.selector_name,
             self.slot_num_lst
         )
         self._parse_mms_drive(
-            self.mms_config.drive_name,
+            self.p_mms_config.drive_name,
             self.slot_num_lst
         )
 
         self.mms_pause = MMSPause()
         self.mms_resume = MMSResume()
+        self.mms_filament_fracture = MMSFilamentFracture()
 
         # Init periodic service for MMS
         self.periodic_task_sp = PeriodicTask()
@@ -321,7 +280,7 @@ class MMS:
         self.mms_extends.append(mms_extend)
 
         # Extend slot_num list
-        extend_slot_num_lst = mms_extend.get_slot_num()
+        extend_slot_num_lst = mms_extend.get_slot_nums()
         self.slot_num_lst.extend(extend_slot_num_lst)
         self.slot_meta.update({
             slot_num:{
@@ -329,6 +288,12 @@ class MMS:
                 SlotMetaKey.extend_num:mms_extend.get_num()
             } for slot_num in extend_slot_num_lst
         })
+
+        # Extend mms_slot object list
+        extend_mms_slots = mms_extend.get_mms_slots()
+        for mms_slot in extend_mms_slots:
+            if mms_slot not in self.mms_slots:
+                self.mms_slots.append(mms_slot)
 
         # Extend MMS Buffer
         self._parse_mms_buffer(
@@ -357,7 +322,7 @@ class MMS:
     # -- Initializers --
     def _initialize_slots(self):
         for slot_num in self.slot_num_lst:
-            self.slots.append(printer_adapter.get_mms_slot(slot_num))
+            self.mms_slots.append(printer_adapter.get_mms_slot(slot_num))
 
     def _initialize_gcode(self):
         commands = [
@@ -379,12 +344,17 @@ class MMS:
 
     def _initialize_loggers(self):
         self.mms_logger = printer_adapter.get_mms_logger()
-        self.log_info = self.mms_logger.create_log_info(console_output=True)
-        self.log_warning = self.mms_logger.create_log_warning()
-        self.log_error = self.mms_logger.create_log_error()
-        self.log_error_c = self.mms_logger.create_log_error(console_output=True)
+        self.log_info = self.mms_logger.create_log_info(
+            console_output=True)
+        self.log_warning = self.mms_logger.create_log_warning(
+            console_output=True)
+        self.log_error = self.mms_logger.create_log_error(
+            console_output=True)
         # Silent
-        self.log_info_s = self.mms_logger.create_log_info(console_output=False)
+        self.log_info_s = self.mms_logger.create_log_info(
+            console_output=False)
+        self.log_error_s = self.mms_logger.create_log_error(
+            console_output=False)
 
     def _initialize_observer(self):
         self.print_observer = PrintObserver()
@@ -412,26 +382,28 @@ class MMS:
         self.log_info(self.mms_config.welcome)
 
     def _last_breath(self):
+        self.log_info_s(f"MMS Version: {self.mms_config.version}")
+
         if self.mms_selectors and self.mms_drives:
-            self.log_status()
-            # self.log_status_stepper()
+            self.log_status(silent=False)
 
         if self.mms_selectors:
-            self.log_info(
+            self.log_info_s(
                 "MMS Selector MCU_Stepper: "
                 f"{[s.get_mcu_stepper_status() for s in self.mms_selectors]}")
 
         if self.mms_drives:
-            self.log_info(
+            self.log_info_s(
                 "MMS Drive MCU_Stepper: "
                 f"{[s.get_mcu_stepper_status() for s in self.mms_drives]}")
 
         if self.mms_swap:
-            self.log_info(f"MMS Swap: {self.mms_swap.get_status()}")
+            self.log_info_s(f"MMS Swap: {self.mms_swap.get_status()}")
 
         # Stop observer
         if self.print_observer:
-            self.log_info(f"Print Observer: {self.print_observer.get_status()}")
+            self.log_info_s(
+                f"Print Observer: {self.print_observer.get_status()}")
             self.print_observer.stop()
 
         toolhead_adapter.log_snapshot()
@@ -444,12 +416,12 @@ class MMS:
         if not self._is_connected:
             return
 
-        for mms_slot in self.slots:
+        for mms_slot in self.mms_slots:
             if mms_slot.find_waiting(mcu_pin, pin_type, pin_state):
                 return
 
         # Find failed
-        self.log_info(f"slot[*] '{pin_type}' is {pin_state}")
+        self.log_info_s(f"slot[*] '{pin_type}' is {pin_state}")
 
     # Outlet handlers
     def handle_outlet_is_triggered(self, mcu_pin):
@@ -478,18 +450,34 @@ class MMS:
         self._handle_state(
             mcu_pin, self.pin_type.entry, self.pin_state.released)
 
-    # -- Get status or componet --
-    def get_slot_nums(self):
-        return self.slot_num_lst
-
+    # -- Get config or componet --
     def get_retry_times(self):
-        return self.mms_config.retry_times
+        return self.p_mms_config.retry_times
 
+    def get_entry(self):
+        return self.entry
+
+    def get_print_observer(self):
+        return self.print_observer
+
+    def get_mms_pause(self):
+        return self.mms_pause
+
+    def get_mms_resume(self):
+        return self.mms_resume
+
+    def get_mms_filament_fracture(self):
+        return self.mms_filament_fracture
+
+    # -- Get slot meta data --
     def get_meta(self, slot_num):
         return self.slot_meta.get(slot_num, {})
 
     def get_mms_buffer(self, slot_num):
         return self.get_meta(slot_num).get(SlotMetaKey.mms_buffer, None)
+
+    def get_mms_buffers(self):
+        return self.mms_buffers
 
     def get_selector(self, slot_num):
         return self.get_meta(slot_num).get(SlotMetaKey.mms_selector, None)
@@ -503,29 +491,15 @@ class MMS:
     def get_buffer_runout(self, slot_num):
         return self.get_meta(slot_num).get(self.pin_type.buffer_runout, None)
 
-    def get_entry(self):
-        return self.entry
-
-    def get_slot(self, slot_num):
-        error_msg = f"slot[{slot_num}] is not available"
-
-        if not (0 <= slot_num < len(self.slots)):
-            raise IndexError(error_msg)
-
-        mms_slot = self.slots[slot_num]
-        if mms_slot is None:
-            raise IndexError(error_msg)
-
-        return mms_slot
-
-    def get_slots(self):
-        return self.slots
+    # -- Get slot_num --
+    def get_slot_nums(self):
+        return self.slot_num_lst
 
     def get_loading_slots(self):
         """Return slots list which are loading to buffer."""
         return [
             slot.get_num()
-            for slot in self.slots
+            for slot in self.mms_slots
             if slot.is_loading()
         ]
 
@@ -534,6 +508,53 @@ class MMS:
         Current slot is determined by the following logic:
         - If selector has a focused slot (selected_slot), it takes priority
         - If no focused slot, use the first loading slot in the buffer
+
+        -- Multi-Extend consider
+        +------+---------------------+---------------------+---+---------+
+        |      |   Main SLOT 0~3     |   Extend SLOT 4~7   |...|         |
+        | Case |---------------------+---------------------|...| Return  |
+        |      | selecting | loading | selecting | loading |...|         |
+        |------+-----------+---------+-----------+---------+---+---------|
+        |      | 2         | [2]     | 4         | []      |...|    2    |
+        | I    |---------------------------------------------------------|
+        |      |  <- short, first s in l                                 |
+        |------+-----------+---------+-----------+---------+---+---------|
+        |      | 2         | []      | 4         | [4]     |...|    4    |
+        | II   |---------------------------------------------------------|
+        |      |  <- short, first s in l                                 |
+        |------+-----------+---------+-----------+---------+---+---------|
+        |      | 2         | []      | 4         | []      |...|    2    |
+        | III  |---------------------------------------------------------|
+        |      |  <- compare, return first not None s                    |
+        |------+-----------+---------+-----------+---------+---+---------|
+        |      | 2         | [2]     | 4         | [4]     |...|    2    |
+        | IV   |---------------------------------------------------------|
+        |      |  <- short, first s in l                                 |
+        |------+-----------+---------+-----------+---------+---+---------|
+        |      | 2         | [3]     | 4         | [7]     |...|    2    |
+        | V    |---------------------------------------------------------|
+        |      |  <- compare, return first not None s                    |
+        |------+-----------+---------+-----------+---------+---+---------|
+        |      | 2         | [3]     | 4         | [4]     |...|    4    |
+        | VI   |---------------------------------------------------------|
+        |      |  <- short, first s in l                                 |
+        |------+-----------+---------+-----------+---------+---+---------|
+        |      | 2         | [2, 3]  | 4         | [4, 7]  |...|    2    |
+        | VII  |---------------------------------------------------------|
+        |      |  <- short, first s in l                                 |
+        |------+-----------+---------+-----------+---------+---+---------|
+        |      | None      | [2]     | 4         | [7]     |...|    4    |
+        | VIII |---------------------------------------------------------|
+        |      |  <- compare, return first not None s                    |
+        |------+-----------+---------+-----------+---------+---+---------|
+        |      | None      | [2]     | None      | [7]     |...|    2    |
+        | IX   |---------------------------------------------------------|
+        |      |  <- compare, all s are None, return min not None l      |
+        |------+-----------+---------+-----------+---------+---+---------|
+        |      | None      | []      | None      | []      |...|   None  |
+        | X    |---------------------------------------------------------|
+        |      |  <- compare, all None return None                       |
+        +----------------------------------------------------------------+
         """
         def find_slot_sl(extend_num=None):
             if extend_num is not None:
@@ -611,35 +632,6 @@ class MMS:
         # All None return None
         return None
 
-    def get_main_mms_slots(self):
-        slot_filter = lambda meta: not meta.get(SlotMetaKey.is_extended)
-        return [
-            self.get_slot(slot_num)
-            for slot_num,meta in self.slot_meta.items()
-            if slot_filter(meta)
-        ]
-
-    def get_extend_mms_slots(self, extend_num=None):
-        # return the target extend one
-        slot_filter = lambda meta: (
-            meta.get(SlotMetaKey.extend_num) == extend_num)
-        if extend_num is not None:
-            return [
-                self.get_slot(slot_num)
-                for slot_num,meta in self.slot_meta.items()
-                if slot_filter(meta)
-            ]
-
-        # Default return all extend sets
-        slot_filter = lambda meta: not meta.get(SlotMetaKey.is_extended)
-        lst = [
-            self.get_slot(slot_num)
-            for slot_num,meta in self.slot_meta.items()
-            if slot_filter(meta)
-        ]
-        lst.sort(key=lambda s: s.get_num())
-        return lst
-
     def get_selecting_slot(self, extend_num=None):
         """
         Return selecting slot which is selecting by stepper
@@ -669,14 +661,84 @@ class MMS:
             else self.get_main_mms_slots()
         return find_selecting_one(mms_slots)
 
-    def get_print_observer(self):
-        return self.print_observer
+    def get_selecting_slots(self):
+        """
+        Return all selecting slots which is selecting by stepper
+        or selector pin is triggered, main and all extend
+        """
+        def find_selecting_slots(mms_slots):
+            slot_num_lst = [
+                s.get_num()
+                for s in mms_slots
+                if s.selector_is_triggered()
+            ]
 
-    def get_mms_pause(self):
-        return self.mms_pause
+            focus_slot = mms_slots[0].get_mms_selector().get_focus_slot()
+            if focus_slot not in slot_num_lst:
+                slot_num_lst.append(focus_slot)
 
-    def get_mms_resume(self):
-        return self.mms_resume
+            return [s for s in slot_num_lst if s is not None]
+
+        # Main selecting slot_nums
+        selecting_slots = find_selecting_slots(
+            self.get_main_mms_slots()
+        )
+        # Extend selecting slot_nums
+        for mms_extend in self.mms_extends:
+            extend_ss = find_selecting_slots(
+                mms_extend.get_mms_slots()
+            )
+            selecting_slots.extend(extend_ss)
+
+        return selecting_slots
+
+    # -- Get mms_slot --
+    def get_mms_slots(self):
+        # Return all mms_slot objects,
+        # include main and extends
+        return self.mms_slots
+
+    def get_mms_slot(self, slot_num):
+        error_msg = f"slot[{slot_num}] is not available"
+
+        if not (0 <= slot_num < len(self.mms_slots)):
+            raise IndexError(error_msg)
+
+        mms_slot = self.mms_slots[slot_num]
+        if mms_slot is None:
+            raise IndexError(error_msg)
+
+        return mms_slot
+
+    def get_main_mms_slots(self):
+        slot_filter = lambda meta: not meta.get(SlotMetaKey.is_extended)
+        return [
+            self.get_mms_slot(slot_num)
+            for slot_num,meta in self.slot_meta.items()
+            if slot_filter(meta)
+        ]
+
+    def get_extend_mms_slots(self, extend_num=None):
+        # return the target extend one
+        slot_filter = lambda meta: (
+            meta.get(SlotMetaKey.extend_num) == extend_num
+        )
+        if extend_num is not None:
+            return [
+                self.get_mms_slot(slot_num)
+                for slot_num,meta in self.slot_meta.items()
+                if slot_filter(meta)
+            ]
+
+        # Default return all extend sets
+        slot_filter = lambda meta: not meta.get(SlotMetaKey.is_extended)
+        lst = [
+            self.get_mms_slot(slot_num)
+            for slot_num,meta in self.slot_meta.items()
+            if slot_filter(meta)
+        ]
+        lst.sort(key=lambda s: s.get_num())
+        return lst
 
     # -- Check Related --
     def slot_is_available(self, slot_num, can_none=False):
@@ -684,7 +746,7 @@ class MMS:
             return True
 
         if slot_num not in self.slot_num_lst:
-            self.log_error_c(
+            self.log_error(
                 f"slot '{slot_num}' is not available, "
                 f"choices are: {self.slot_num_lst}"
             )
@@ -709,38 +771,51 @@ class MMS:
             and not self.printer_is_shutdown()
 
     def mms_selector_is_running(self):
-        for mms_slot in self.get_slots():
+        for mms_slot in self.get_mms_slots():
             if mms_slot.get_mms_selector().is_running():
                 return True
         return False
 
     def mms_drive_is_running(self):
-        for mms_slot in self.get_slots():
+        for mms_slot in self.get_mms_slots():
             if mms_slot.get_mms_drive().is_running():
                 return True
         return False
 
-    # -- Filament fracture detection --
+    # -- Config enable --
     def fracture_detection_is_enabled(self):
-        return self.fracture_detection_enable
+        return bool(self.p_mms_config.fracture_detection_enable)
 
-    def enable_fracture_detection(self):
-        self.fracture_detection_enable = True
+    def slot_substitute_is_enabled(self):
+        return bool(self.p_mms_config.slot_substitute_enable)
 
-    def disable_fracture_detection(self):
-        self.fracture_detection_enable = False
+    def find_available_substitute_slot(self, slot_num):
+        if not self.slot_substitute_is_enabled():
+            return None
 
-    @contextmanager
-    def pause_fracture_detection(self):
-        self.disable_fracture_detection()
-        try:
-            yield
-        finally:
-            self.enable_fracture_detection()
+        slot_num_a = None
+        slot_num_org = slot_num
+        slot_num_checked = [slot_num]
+
+        while not slot_num_a:
+            slot_num_sub = self.get_mms_slot(slot_num).get_substitute_with()
+
+            if slot_num_sub is None \
+                or slot_num_sub in slot_num_checked:
+                break
+            slot_num_checked.append(slot_num_sub)
+
+            mms_slot_sub = self.get_mms_slot(slot_num_sub)
+            if mms_slot_sub.inlet.is_triggered():
+                slot_num_a = slot_num_sub
+            else:
+                slot_num = slot_num_sub
+
+        return slot_num_a
 
     # -- MMS Status --
     def _format_slot_status(self, slot_num):
-        slot = self.get_slot(slot_num)
+        slot = self.get_mms_slot(slot_num)
         meta = self.slot_meta.get(slot_num)
 
         return {
@@ -771,7 +846,7 @@ class MMS:
         return {
             "slots" : {
                 slot.get_num() : self._format_slot_status(slot.get_num())
-                for slot in self.slots
+                for slot in self.mms_slots
             },
             "steppers" : {
                 "selectors" : {
@@ -792,29 +867,27 @@ class MMS:
     def cmd_MMS(self, gcmd):
         self.log_info(f"MMS Version:{self.mms_config.version}")
 
-    def log_status(self, silent=False):
+    def log_status(self, silent=True):
+        log_func = self.log_info_s if silent else self.log_info
+        log_func(f"MMS Version: {self.mms_config.version}")
         self.log_status_stepper(silent)
 
         info = ""
         info += "Slot pins status:\n"
-        for slot in self.get_slots():
+        for slot in self.get_mms_slots():
             info += slot.format_pins_status()
 
         # if show_rfid:
         #     info += "\n"
         #     info += "RFID Tag Data:\n"
-        #     for slot in self.slots:
+        #     for slot in self.mms_slots:
         #         info += f"slot[{slot.get_num()}] RFID data:\n"
         #         info += json.dumps(
         #             slot.get_rfid_status(), indent=4) + "\n"
-
-        if silent:
-            self.log_info_s(info)
-        else:
-            self.log_info(info)
+        log_func(info)
 
     def cmd_MMS_STATUS(self, gcmd):
-        self.log_status()
+        self.log_status(silent=False)
 
     def cmd_MMS_SAMPLE(self, gcmd):
         duration = gcmd.get_int("DURATION", default=0, minval=0)
@@ -823,17 +896,19 @@ class MMS:
             self.log_warning("MMS_SAMPLE is running, return...")
             return
 
-        func = self.log_status
+        config_timeout = (
+            self.mms_config.sample_count * self.mms_config.sample_period)
+        timeout = duration or config_timeout
         self.periodic_task_sp.set_period(self.mms_config.sample_period)
-        sample_duration = (self.mms_config.sample_count
-                           * self.mms_config.sample_period)
-        self.periodic_task_sp.set_timeout(duration or sample_duration)
+        self.periodic_task_sp.set_timeout(timeout)
+
+        func = self.log_status
+        params = {"silent": False}
         try:
-            is_ready = self.periodic_task_sp.schedule(func)
-            if is_ready:
+            if self.periodic_task_sp.schedule(func, params):
                 self.periodic_task_sp.start()
         except Exception as e:
-            self.log_error(f"MMS_SAMPLE error:{e}")
+            self.log_error_s(f"MMS_SAMPLE error:{e}")
         self.log_info("MMS sample begin")
 
     def log_status_stepper(self, silent=False):
@@ -868,7 +943,7 @@ class MMS:
             if is_ready:
                 self.periodic_task_sp.start()
         except Exception as e:
-            self.log_error(f"MMS_SAMPLE_STEPPER error:{e}")
+            self.log_error_s(f"MMS_SAMPLE_STEPPER error:{e}")
         self.log_info("MMS sample stepper begin")
 
     def cmd_MMS_TEST(self, gcmd):

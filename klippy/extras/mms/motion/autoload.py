@@ -13,6 +13,7 @@ from ..adapters import (
     printer_adapter,
     toolhead_adapter,
 )
+from ..core.config import PrinterConfig
 from ..core.exceptions import (
     DeliveryTerminateSignal,
 )
@@ -20,16 +21,26 @@ from ..core.task import AsyncTask
 
 
 @dataclass(frozen=True)
+class PrinterAutoloadConfig(PrinterConfig):
+    # Enable/disable the autoload module
+    # Default is disable
+    # 0 = disable, 1 = enable
+    enable: int = 0
+
+
+@dataclass(frozen=True)
 class AutoloadConfig:
     show_debug_log: bool = True
     delay_seconds: float = 3
-    distance_load: float = 1000
     execute_stop_delay: float = 0.3
 
 
 class MMSAutoload:
     def __init__(self, config):
         self.reactor = printer_adapter.get_reactor()
+
+        p_al_config = PrinterAutoloadConfig(config)
+        self._enable = bool(p_al_config.enable)
 
         self.al_config = AutoloadConfig()
 
@@ -56,13 +67,17 @@ class MMSAutoload:
 
     def _initialize_gcode(self):
         commands = [
-            ("MMS_SEMI_AUTOLOAD", self.cmd_MMS_SEMI_AUTOLOAD),
+            ("MMS_SEMI_AUTOLOAD", self.cmd_MMS_PRE_LOAD),
+            ("MMS_PRE_LOAD", self.cmd_MMS_PRE_LOAD),
+
+            ("MMS_AUTOLOAD_ENABLE", self.cmd_MMS_AUTOLOAD_ENABLE),
+            ("MMS_AUTOLOAD_DISABLE", self.cmd_MMS_AUTOLOAD_DISABLE),
         ]
         gcode_adapter.bulk_register(commands)
 
     def _initialize_loggers(self):
         mms_logger = printer_adapter.get_mms_logger()
-        self.log_info = mms_logger.create_log_info(console_output=True)
+        self.log_info = mms_logger.create_log_info(console_output=False)
         self.log_warning = mms_logger.create_log_warning()
         self.log_error = mms_logger.create_log_error()
 
@@ -74,6 +89,18 @@ class MMSAutoload:
         return self._in_progress
 
     # ---- Autoload ----
+    def is_enabled(self):
+        return self._enable
+
+    def is_disabled(self):
+        return not self._enable
+
+    def enable(self):
+        self._enable = True
+
+    def disable(self):
+        self._enable = False
+
     @contextmanager
     def _execution(self, slot_num):
         self._in_progress = True
@@ -106,6 +133,7 @@ class MMSAutoload:
             check_lst = []
         else:
             check_lst = [
+                (self.is_disabled, "mms_autoload is disabled"),
                 (self.mms.mms_drive_is_running, "drive is running"),
                 (self.mms.mms_selector_is_running, "selector is running"),
                 (self.mms.printer_is_shutdown, "printer is prishutdownnting"),
@@ -136,11 +164,11 @@ class MMSAutoload:
     def _fetch_slot(self, slot_num=None):
         """Find out mms_slot which is loaded to inlet but not gate"""
         if slot_num is None:
-            for mms_slot in self.mms.get_slots():
+            for mms_slot in self.mms.get_mms_slots():
                 if self._check_slot(mms_slot):
                     return mms_slot
 
-        mms_slot = self.mms.get_slot(slot_num)
+        mms_slot = self.mms.get_mms_slot(slot_num)
         if self._check_slot(mms_slot):
             return mms_slot
 
@@ -179,10 +207,9 @@ class MMSAutoload:
         slot_num = self.mms.get_current_slot()
         if slot_num is None:
             return
-
         self._should_break = True
-        self.mms_delivery.mms_stop(slot_num)
-        self.log_info(f"slot[{slot_num}] autoload stop")
+        if self.mms_delivery.mms_stop(slot_num):
+            self.log_info(f"slot[{slot_num}] autoload stop")
 
     def _run(self, mms_slot):
         slot_num = mms_slot.get_num()
@@ -204,8 +231,8 @@ class MMSAutoload:
             self.log_error(
                 f"slot[{slot_num}] autoload unload other slots error: {e}")
 
-    # ---- Semi-Autoload ----
-    def _can_semi_autoload(self):
+    # ---- Pre-load ----
+    def _can_pre_load(self):
         check_lst = [
             (self.mms.printer_is_shutdown, "printer is shutdown"),
             (self.mms.printer_is_printing, "printer is printing"),
@@ -215,22 +242,21 @@ class MMSAutoload:
         ]
         for condition,msg in check_lst:
             if condition():
-                self.log_info(f"semi-autoload skip: {msg}")
+                self.log_info(f"pre_load skip: {msg}")
                 return False
         return True
 
-    def mms_semi_autoload(self, slot_num):
+    def mms_pre_load(self, slot_num):
         try:
             self.mms_delivery.select_slot(slot_num)
-            self.mms_delivery.semi_load_to_gate(
-                slot_num, distance=self.al_config.distance_load)
+            self.mms_delivery.pre_load_to_gate(slot_num)
             self.mms_delivery.unload_to_gate(slot_num)
         except DeliveryTerminateSignal:
-            self.log_info(f"slot[{slot_num}] semi-autoload terminated")
+            self.log_info(f"slot[{slot_num}] pre_load terminated")
         except Exception as e:
-            self.log_error(f"slot[{slot_num}] semi-autoload error: {e}")
+            self.log_error(f"slot[{slot_num}] pre_load error: {e}")
 
-    def cmd_MMS_SEMI_AUTOLOAD(self, gcmd):
+    def cmd_MMS_PRE_LOAD(self, gcmd):
         if not self._delay_satisfied():
             return
 
@@ -238,11 +264,18 @@ class MMSAutoload:
         if not self.mms.slot_is_available(slot_num):
             return
 
-        if not self._can_semi_autoload():
+        if not self._can_pre_load():
             return
 
         self.mms_delivery.deliver_async_task(
-            self.mms_semi_autoload, {"slot_num":slot_num})
+            self.mms_pre_load, {"slot_num":slot_num})
+
+    # ---- GCode enable/disable ----
+    def cmd_MMS_AUTOLOAD_ENABLE(self, gcmd):
+        self.enable()
+
+    def cmd_MMS_AUTOLOAD_DISABLE(self, gcmd):
+        self.disable()
 
 
 def load_config(config):

@@ -43,6 +43,7 @@ class Panel(ScreenPanel):
         self.slot_buttons = {}
         self.temp_btn = None
         self.time_btn = None
+        self.stop_heat_btn = None
         self.temp_str = "--"
 
         self.mms_selecting_slots = []
@@ -175,6 +176,19 @@ class Panel(ScreenPanel):
             # - Rows 0 and 1 (i//2: 0-1 => row 0, 2-3 => row 1)
             area.attach(btn, i % 2 + 1, i // 2, 1, 1)
 
+        # Stop heating button
+        self.stop_heat_btn = VerButton(
+            image=VImage(
+                file_name="vivid_stop_idle.svg",
+                width=width * 2,
+                height=height * 2
+            ),
+            label=VLabel(content="Stop", size=font_size)
+        )
+        self.stop_heat_btn.get_style_context().add_class("vvd-stop-heat-btn")
+        self.stop_heat_btn.connect("clicked", self.mms_heater_stop)
+        area.attach(self.stop_heat_btn, 3, 0, 1, 2)
+
         return area
 
     def create_mms_area(self):
@@ -305,6 +319,8 @@ class Panel(ScreenPanel):
         # Update UI
         self.temp_btn.set_target(temperature, color)
         self.time_btn.start_countdown(heat_duration, teardown_func=self.stop_heating)
+        if self.stop_heat_btn:
+            self.stop_heat_btn.image.update_image_file("vivid_stop_busy.svg")
 
     def start_heating(self, temperature):
         heater = "vivid_heater"
@@ -393,11 +409,11 @@ class Panel(ScreenPanel):
         buttons = [
             ("mms00", "vivid_mms00", "MMS00\nMMS_STATUS", self.mms_action_c, "MMS_STATUS"),
             ("mms0", "vivid_mms0", "MMS0\nMMS_SAMPLE", self.mms_action_c, "MMS_SAMPLE"),
-            ("dripload", "vivid_switch", "DRIPLOAD  \nDisable", self.mms_dripload_clicked, None),
+            # ("dripload", "vivid_switch", "DRIPLOAD  \nDisable", self.mms_dripload_clicked, None),
             ("mms9", "vivid_walk", "MMS9\nMMS_SLOTS_WALK", self.mms_action, "MMS_SLOTS_WALK"),
             ("mms8", "vivid_loop", "MMS8\nMMS_SLOTS_LOOP", self.mms_action, "MMS_SLOTS_LOOP"),
-            ("mms999", "vivid_stop", "MMS999\nMMS_STOP      ", self.mms_action, "MMS_STOP"),
-            ("heater", "vivid_stop", "Heater    \nStop", self.mms_heater_stop, None),
+            # ("mms999", "vivid_stop", "MMS999\nMMS_STOP      ", self.mms_action, "MMS_STOP"),
+            # ("heater", "vivid_stop", "Heater    \nStop", self.mms_heater_stop, None),
         ]
 
         # Create and store buttons
@@ -420,11 +436,11 @@ class Panel(ScreenPanel):
         # Position buttons
         grid.attach(all_buttons["mms00"], 0, 1, 1, 1)
         grid.attach(all_buttons["mms0"], 0, 2, 1, 1)
-        grid.attach(all_buttons["dripload"], 0, 3, 1, 1)
-        grid.attach(all_buttons["heater"], 0, 4, 1, 1)
+        # grid.attach(all_buttons["dripload"], 0, 3, 1, 1)
+        # grid.attach(all_buttons["heater"], 0, 4, 1, 1)
         grid.attach(all_buttons["mms9"], 1, 1, 1, 1)
         grid.attach(all_buttons["mms8"], 1, 2, 1, 1)
-        grid.attach(all_buttons["mms999"], 1, 3, 1, 1)
+        # grid.attach(all_buttons["mms999"], 1, 3, 1, 1)
 
         # Create popup window
         self.close_window_func = create_popup_window(title, grid, "vvd-mms-window")
@@ -473,12 +489,15 @@ class Panel(ScreenPanel):
             self.close_window_func = None
 
     def mms_dripload_clicked(self, widget):
-        self.send_klippy_script("MMS_DRIPLOAD SWITCH=0")
+        return
+        # self.send_klippy_script("MMS_DRIPLOAD SWITCH=0")
 
     def mms_heater_stop(self, widget):
         self.stop_heating()
         self.temp_btn.reset_target()
         self.time_btn.stop_countdown()
+        if self.stop_heat_btn:
+            self.stop_heat_btn.image.update_image_file("vivid_stop_idle.svg")
 
     # ---- MMS LED ----
     def mms_update_slot_led(self, slot_num, color):

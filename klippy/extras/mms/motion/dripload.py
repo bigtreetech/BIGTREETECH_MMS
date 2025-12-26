@@ -122,7 +122,7 @@ class MMSDripload:
 
     # -- Execution --
     def _drive_drip(self, slot_num, distance):
-        mms_slot = self.mms.get_slot(slot_num)
+        mms_slot = self.mms.get_mms_slot(slot_num)
         mms_drive = mms_slot.get_mms_drive()
         mms_drive.update_focus_slot(slot_num)
 
@@ -170,8 +170,7 @@ class MMSDripload:
             return
 
         try:
-            # if self.mms.get_slot(slot_num).drip.is_released():
-            if self.mms.get_slot(slot_num).drip.is_triggered():
+            if self.mms.get_mms_slot(slot_num).drip.is_triggered():
                 dist_cfg = self.dl_config.drip_distance
                 dist_est = self.dist_calibrator.get_estimate()
                 dist_want = min(dist_est, dist_cfg) if dist_est else dist_cfg
@@ -236,7 +235,7 @@ class MMSDripload:
             self.log_info_silent("slot unknown, break dripload failed")
             return
 
-        mms_drive = self.mms.get_slot(self._drip_slot_num).get_mms_drive()
+        mms_drive = self.mms.get_mms_slot(self._drip_slot_num).get_mms_drive()
         if mms_drive.is_running():
             mms_drive.terminate_manual_move()
 
@@ -262,7 +261,7 @@ class MMSDripload:
             if is_ready:
                 self.periodic_task.start()
 
-            mms_slot = self.mms.get_slot(slot_num)
+            mms_slot = self.mms.get_mms_slot(slot_num)
             mms_slot.outlet.add_trigger_callback(self._break_dripload)
         except Exception as e:
             self.log_error(f"slot[{slot_num}] dripload activate error: {e}")
@@ -281,7 +280,7 @@ class MMSDripload:
             return
 
         try:
-            mms_slot = self.mms.get_slot(self._drip_slot_num)
+            mms_slot = self.mms.get_mms_slot(self._drip_slot_num)
             mms_slot.outlet.remove_trigger_callback(self._break_dripload)
 
             self.periodic_task.stop()

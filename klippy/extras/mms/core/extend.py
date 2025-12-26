@@ -78,7 +78,7 @@ class MMSExtend:
     def get_num(self) -> int:
         return self.num
 
-    def get_slot_num(self) -> List[int]:
+    def get_slot_nums(self) -> List[int]:
         return [int(slot_num) for slot_num in self.extend_config.slot]
 
     def get_outlet_pin(self) -> str:
@@ -92,6 +92,13 @@ class MMSExtend:
 
     def get_buffer_runout_pin(self) -> str:
         return self.extend_config.buffer_runout
+
+    def get_mms_slots(self):
+        mms_slots = [
+            printer_adapter.get_mms_slot(slot_num)
+            for slot_num in self.get_slot_nums()
+        ]
+        return mms_slots
 
 
 def load_config(config):

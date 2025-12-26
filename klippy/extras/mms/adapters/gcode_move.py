@@ -101,7 +101,10 @@ class GCodeMoveAdapter(BaseAdapter):
 
     def g1(self, params):
         return self._get_gcode_move().cmd_G1(
-            gcode_adapter.easy_gcmd(params)
+            gcode_adapter.easy_gcmd(
+                command = "G1",
+                params = params
+            )
         )
 
 

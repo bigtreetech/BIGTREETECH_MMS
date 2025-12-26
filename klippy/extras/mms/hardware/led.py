@@ -480,7 +480,7 @@ class MMSLed:
     def _initialize_loggers(self):
         # MMS loggers
         mms_logger = printer_adapter.get_mms_logger()
-        self.log_info = mms_logger.create_log_info(console_output=True)
+        self.log_info = mms_logger.create_log_info(console_output=False)
         self.log_warning = mms_logger.create_log_warning(console_output=True)
 
     def _initialize_slot_led(self):
@@ -503,9 +503,9 @@ class MMSLed:
         mms_slot_led = {}
         # Loop through all slots and extract LED configurations
         for slot_num in self.mms.get_slot_nums():
-            mms_slot = self.mms.get_slot(slot_num)
-            # Populate the dictionary for the current slot with LED name
-            # and chip index
+            mms_slot = self.mms.get_mms_slot(slot_num)
+            # Populate the dictionary for the current slot with
+            # LED name and chip index
             mms_slot_led[slot_num] = {
                 "led_name": mms_slot.get_led_name(),
                 "chip_index": mms_slot.get_chip_index(),
@@ -586,7 +586,7 @@ class MMSLed:
         on pins state.
         """
         color = self.determine_led_color(
-            self.mms.get_slot(slot).get_pins_state())
+            self.mms.get_mms_slot(slot).get_pins_state())
         led_manager = self.get_led_manager(slot)
 
         # Create the color mapping for each chip index
@@ -913,7 +913,7 @@ class MMSLed:
     #         self.handle_slot_wave_deactivate(slot_num)
 
     def cmd_EFFECT_TRUNCATE(self, gcmd):
-        for mms_slot in self.mms.get_slots():
+        for mms_slot in self.mms.get_mms_slots():
             mms_slot.slot_led.deactivate_led_effect()
 
 

@@ -17,7 +17,8 @@ from ..adapters import (
 class MMSResume:
     def __init__(self):
         # Command in mainsail.cfg->[gcode_macro RESUME]
-        # self._gcode_command = "RESUME"
+        self._gcode_command = "RESUME"
+        self.reactor = printer_adapter.get_reactor()
 
         self._origin_resume = None
         # Optional?
@@ -51,15 +52,16 @@ class MMSResume:
 
     def _initialize_loggers(self):
         mms_logger = printer_adapter.get_mms_logger()
-        self.log_info = mms_logger.create_log_info()
+        self.log_info = mms_logger.create_log_info(console_output=False)
         self.log_warning = mms_logger.create_log_warning()
         self.log_error = mms_logger.create_log_error()
 
     # ---- Gcode control ----
-    # def gcode_resume(self):
-    #     gcode_adapter.run_command(self._gcode_command)
-    #     self.log_info(
-    #         f"mms_resume send gcode resume: {self._gcode_command}")
+    def gcode_resume(self):
+        gcode_adapter.run_command(self._gcode_command)
+        self.log_info(
+            f"mms_resume send gcode resume: {self._gcode_command}"
+        )
 
     # ---- Status ----
     def is_resuming(self):
@@ -80,15 +82,12 @@ class MMSResume:
         pr.send_resume_command = self.send_resume_command
 
     def send_resume_command(self):
-        if self.is_resuming():
-            return
-        # Update paused state early
-        self._turn_off_pause_flag()
         self.mms_resume()
 
-    def _turn_on_pause_flag(self):
+    def _turn_on_pause_flag(self, eventtime):
         pr = pause_resume_adapter.get_printer_object()
         pr.is_paused = True
+        return self.reactor.NEVER
 
     def _turn_off_pause_flag(self):
         pr = pause_resume_adapter.get_printer_object()
@@ -107,58 +106,65 @@ class MMSResume:
                 "no mms_swap resume is set, "
                 "continue with origin resume command")
             return True
-        # if not self.mms.printer_is_paused():
-        #     self.log_warning("printer is not paused, return")
-        #     return True
 
         cmd = self._mms_swap_resume_gcmd.get_command().strip()
         msg = f"mms_resume resume command '{cmd}'"
         self.log_info(f"{msg} begin")
 
         try:
-            with self._mms_resuming():
-                # Restore extruder target_temp
-                toolhead_adapter.restore_target_temp()
+            # Restore extruder target_temp
+            toolhead_adapter.restore_target_temp()
 
-                success = self._mms_swap_resume_func(
-                    self._mms_swap_resume_gcmd)
+            # Set to None early
+            # If fail again, another pause may cover
+            resume_func = self._mms_swap_resume_func
+            resume_gcmd = self._mms_swap_resume_gcmd
+            self._mms_swap_resume_func = None
+            self._mms_swap_resume_gcmd = None
 
-                if success:
-                    # Set to None if success
-                    # If fail again, another pause may cover
-                    self._mms_swap_resume_func = None
-                    self._mms_swap_resume_gcmd = None
-                    self.log_info(f"{msg} finish")
-                    return True
-                else:
-                    self.log_warning(f"{msg} failed, origin resume skip...")
-                    return False
-
+            success = resume_func(resume_gcmd)
+            if success:
+                self.log_info(f"{msg} finish")
+            return success
         except Exception as e:
-            self.log_error(f"{msg} error: {e}, origin resume skip...")
-            return False
+            self.log_error(f"{msg} error: {e}")
+        return False
 
     def mms_resume(self):
+        if self.is_resuming():
+            self.log_warning("mms_resume is resuming, return...")
+            return False
         if not self._origin_resume:
-            self.log_error("mms_resume error: origin resume command not exists")
+            self.log_error(
+                "mms_resume have no origin resume command, return...")
             return False
 
         self.log_info("mms_resume begin")
 
         # If not pause by MMS, continue with origin resume
         if self.mms_pause.is_mms_paused():
-            # Resume mms_swap
-            success = self._resume_mms_swap()
-            # Reset flag
-            self.mms_pause.reset_mms_pause_flag()
+            with self._mms_resuming():
+                # Update paused flag early
+                self._turn_off_pause_flag()
+                self.mms_pause.free_mms_paused()
 
-            if not success:
-                # Recover paused state
-                self._turn_on_pause_flag()
-                return False
+                # Resume mms_swap
+                success = self._resume_mms_swap()
+                if not success:
+                    self.log_warning(
+                        "mms_resume resume failed, resume abort..."
+                    )
+                    self.mms_pause.set_mms_paused()
+                    # Recover paused flag after
+                    # mms_resume->send_resume_command() is exit
+                    self.reactor.register_timer(
+                        callback=self._turn_on_pause_flag,
+                        waketime=self.reactor.monotonic() + 1.0
+                    )
+                    return False
 
         # Execute origin send_resume_command() of pause_resume
-        self.log_info("mms_resume run origin resume command")
+        self.log_info("mms_resume wakeup origin resume command")
         self._origin_resume()
 
         self.log_info("mms_resume finish")

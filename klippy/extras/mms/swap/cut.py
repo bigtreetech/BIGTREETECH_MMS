@@ -73,6 +73,7 @@ class MMSCut:
     def _initialize_gcode(self):
         commands = [
             ("MMS_CUT", self.cmd_MMS_CUT),
+            ("MMS_SIMPLE_CUT", self.cmd_MMS_SIMPLE_CUT),
         ]
         gcode_adapter.bulk_register(commands)
 
@@ -81,9 +82,10 @@ class MMSCut:
         self.log_info = mms_logger.create_log_info(console_output=True)
         self.log_warning = mms_logger.create_log_warning(console_output=True)
         self.log_error = mms_logger.create_log_error(console_output=True)
+        self.log_info_s = mms_logger.create_log_info(console_output=False)
 
     # ---- Status ----
-    def is_enable(self):
+    def is_enabled(self):
         return bool(self.enable)
 
     def is_running(self):
@@ -98,15 +100,10 @@ class MMSCut:
             self._is_running = False
 
     # ---- Cut ----
-    def _safety_checks(self, slot_num):
-        if slot_num is None:
-            self.log_warning("current slot is None, return")
-            return False
-
+    def _safety_checks(self):
         if self.is_running():
             self.log_warning("another cut is running, return")
             return False
-
         # Check toolhead
         if not toolhead_adapter.is_homed():
             self.log_warning("toolhead is not homed, return")
@@ -132,19 +129,18 @@ class MMSCut:
         )
 
     def mms_cut(self):
-        slot_num = self.mms.get_current_slot()
-        if not self._safety_checks(slot_num):
+        if not self._safety_checks():
             return False
 
-        if not self.is_enable():
-            self.log_warning(f"slot[{slot_num}] cut is disabled")
+        if not self.is_enabled():
+            self.log_warning("slot[*] cut is disabled")
             return False
 
-        # Deactivate before Extruder unload
-        mms_buffer = self.mms.get_slot(slot_num).get_mms_buffer()
-        mms_buffer.deactivate_monitor()
+        # Make sure all mms_buffers are deactivated
+        for mms_buffer in self.mms.get_mms_buffers():
+            mms_buffer.deactivate_monitor()
 
-        self.log_info(f"slot[{slot_num}] cut begin")
+        self.log_info_s("slot[*] cut begin")
 
         with self._cut_is_running():
             try:
@@ -152,20 +148,19 @@ class MMSCut:
                 self.cut_final()
                 self.cut_init()
             except Exception as e:
-                self.log_error(f"slot[{slot_num}] cut error: {e}")
+                self.log_error(f"slot[*] cut error: {e}")
                 return False
 
-        self.log_info(f"slot[{slot_num}] cut finish")
+        self.log_info_s("slot[*] cut finish")
         return True
 
     def cmd_MMS_CUT(self, gcmd):
-        if not self.mms.cmd_can_exec():
-            self.log_warning("MMS_CUT can not execute now")
-            return False
-
         with toolhead_adapter.snapshot():
             with toolhead_adapter.safe_z_raise(self.z_raise):
                 self.mms_cut()
+
+    def cmd_MMS_SIMPLE_CUT(self, gcmd):
+        self.mms_cut()
 
 
 def load_config(config):
