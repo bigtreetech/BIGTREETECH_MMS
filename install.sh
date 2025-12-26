@@ -291,9 +291,9 @@ verify_home_dirs() {
 }
 
 set_serial_id() {
-    mapfile -t OPTIONS < <(ls /dev/serial/by-id/ 2>/dev/null)
-    local opt_num=${#OPTIONS[@]}
-    if [ "${opt_num}" == 0 ]; then
+    mapfile -t ids < <(ls /dev/serial/by-id/ | grep "vivid\|buffer" 2>/dev/null)
+    local ids_num=${#ids[@]}
+    if [ "${ids_num}" == 0 ]; then
         echo -e "${WARNING}${SECTION}Device serial id not found, please confirm if the ViViD cable is properly plugged in.${INPUT}"
         yn=$(prompt_yn "Do not configure the serial id for now, manually modify it after installation is complete.")
         echo
@@ -301,7 +301,7 @@ set_serial_id() {
             abort
         fi
     else
-        if [ "${opt_num}" == 1 ]; then
+        if [ "${ids_num}" == 1 ]; then
             echo -e "${WARNING}${SECTION}Only 1 serial id was found. ViViD requires at least 2(ViViD + buffer). Please confirm if the ViViD cable is properly plugged in.${INPUT}"
             yn=$(prompt_yn "Configure one first, and manually modify the rest after installation is complete.")
             echo
@@ -310,29 +310,23 @@ set_serial_id() {
             fi
         fi
 
-        option NONE "Don't configure it yet"
-
-        opt_num=${#OPTIONS[@]}
-        if [ "${opt_num}" -gt 1 ]; then
-            echo -e "${PROMPT}${SECTION}Please select one of the IDs from the list below as the ID for ${PURPLE}ViViD${PROMPT}.${INPUT}"
-            prompt_option opt "ViViD MCU serial id:" "${OPTIONS[@]}"
-            if [ "${opt}" != "${NONE}" ]; then
-                option_del "${opt}"
-                g_vivid_id=${opt}
-                echo -e "${PROMPT}ViViD MCU serial id: ${PURPLE}${g_vivid_id}${INPUT}"
+        for id in "${ids[@]}"; do
+            if [[ "$id" == *"vivid"* ]]; then
+                echo -e "${PROMPT}Is ${PURPLE}${id}${PROMPT} a ${PURPLE}ViViD${PROMPT} serial port?${INPUT}"
+                yn=$(prompt_yn "ViViD MCU serial id")
+                echo
+                if [ "$yn" = "y" ]; then
+                    g_vivid_id=${id}
+                fi
+            elif [[ "$id" == *"buffer"* ]]; then
+                echo -e "${PROMPT}Is ${PURPLE}${id}${PROMPT} a ${PURPLE}Buffer${PROMPT} serial port?${INPUT}"
+                yn=$(prompt_yn "Buffer MCU serial id")
+                echo
+                if [ "$yn" = "y" ]; then
+                    g_buffer_id=${id}
+                fi
             fi
-        fi
-
-        opt_num=${#OPTIONS[@]}
-        if [ "${opt_num}" -gt 1 ]; then
-            echo -e "${PROMPT}${SECTION}Please select one of the IDs from the list below as the ID for ${PURPLE}Buffer${PROMPT}.${INPUT}"
-            prompt_option opt "Buffer MCU serial id:" "${OPTIONS[@]}"
-            if [ "${opt}" != "${NONE}" ]; then
-                option_del "${opt}"
-                g_buffer_id=${opt}
-                echo -e "${PROMPT}Buffer MCU serial id: ${PURPLE}${g_buffer_id}${INPUT}"
-            fi
-        fi
+        done
     fi
 }
 
@@ -652,53 +646,52 @@ uninstall_KlipperScreen() {
 
 set_user_config() {
     local mms_dir="${KLIPPER_CONFIG_HOME}/sample-bigtreetech-mms"
-    local mms_path="${mms_dir}/mms.cfg"
-    local swap_dir="${mms_dir}/swap"
-    local purge="${swap_dir}/mms-purge.cfg"
-    local brush="${swap_dir}/mms-brush.cfg"
-    local cutter="${swap_dir}/mms-cut.cfg"
+    local mms_path="${mms_dir}/mms/mms.cfg"
+    local base_dir="${mms_dir}/base"
+    local cut_path="${base_dir}/mms-cut.cfg"
+    local purge_path="${base_dir}/mms-purge.cfg"
 
     # aht30 config [ATH10/AHT3X]
     if [ "${g_aht30_patch}" == 1 ]; then
         local aht30_cfg="${mms_dir}/hardware/mms-heater.cfg"
-        sed -i 's/sensor_type: AHT3X/sensor_type: AHT10/g' "${aht30_cfg}"
+        sed -i 's/sensor_type:          AHT3X/sensor_type:          AHT10/g' "${aht30_cfg}"
     fi
 
     echo -e "${INFO}Cutter must be configured, please configure the specific position in ${PURPLE}${cutter}${INPUT}"
 
     # entry sensor
     if [ "${g_entry_sensor}" -eq 1 ]; then
-        sed -i -e "s|^#\s*\(entry_sensor: EBBCan:gpio21\)|\1|" "${mms_path}"
+        sed -i -e "s|^#\s*\(entry_sensor:    EBBCan:gpio21\)|\1|" "${mms_path}"
         echo -e "${INFO}Entry Sensor has been enabled, please configure the specific pin in ${PURPLE}${mms_path}${INPUT}"
     fi
 
     # trash can
     if [ "${g_trash_can}" -eq 0 ]; then
-        sed -i -e "s|enable: 1|enable: 0|g" "${purge}"
+        sed -i -e "s|enable:                  1     # Purge|enable:                  0     # Purge|g" "${purge_path}"
     else
-        echo -e "${INFO}Trash can has been enabled, please configure the specific position in ${PURPLE}${purge}${INPUT}"
+        echo -e "${INFO}Trash can has been enabled, please configure the specific position in ${PURPLE}${purge_path}${INPUT}"
     fi
 
     # brush
     if [ "${g_brush}" -eq 0 ]; then
-        sed -i -e "s|enable: 1|enable: 0|g" "${brush}"
+        sed -i -e "s|enable:                  1     # Brush|enable:                  0     # Brush|g" "${purge_path}"
     else
-        echo -e "${INFO}Brush has been enabled, please configure the specific position in ${PURPLE}${brush}${INPUT}"
+        echo -e "${INFO}Brush has been enabled, please configure the specific position in ${PURPLE}${purge_path}${INPUT}"
     fi
 
     # vivid seral id
     if [ -z "${g_vivid_id}" ]; then
-        echo -e "${WARNING}ViViD MCU serial id has not been set. Please modify it manually in ${PURPLE}${mms_dir}/mms.cfg${INPUT}"
+        echo -e "${WARNING}ViViD MCU serial id has not been set. Please modify it manually in ${PURPLE}${mms_path}${INPUT}"
     else
         echo -e "${INFO}ViViD Serial ID: ${PURPLE}${g_vivid_id}${INPUT}"
-        sed -i "s|usb-Klipper_stm32g0b1xx_vivid-if00|${g_vivid_id}|g" "${mms_dir}/mms.cfg"
+        sed -i "s|usb-Klipper_stm32g0b1xx_vivid-if00|${g_vivid_id}|g" "${mms_path}"
     fi
     # buffer seral id
     if [ -z "${g_buffer_id}" ]; then
-        echo -e "${WARNING}Buffer MCU serial id has not been set. Please modify it manually in ${PURPLE}${mms_dir}/mms.cfg${INPUT}"
+        echo -e "${WARNING}Buffer MCU serial id has not been set. Please modify it manually in ${PURPLE}${mms_path}${INPUT}"
     else
         echo -e "${INFO}Buffer Serial ID: ${PURPLE}${g_buffer_id}${INPUT}"
-        sed -i "s|usb-Klipper_stm32f042x6_buffer-if00|${g_buffer_id}|g" "${mms_dir}/mms.cfg"
+        sed -i "s|usb-Klipper_stm32f042x6_buffer-if00|${g_buffer_id}|g" "${mms_path}"
     fi
 }
 
