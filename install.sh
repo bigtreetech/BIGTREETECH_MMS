@@ -505,10 +505,16 @@ copy_config_files() {
     cp -r "${src_dir}" "${dst_dir}"
 }
 
+cleaup_old_resource() {
+    local printer_cfg="${KLIPPER_CONFIG_HOME}/printer.cfg"
+    local old_mms_sed='\[include sample-bigtreetech-mms/mms.cfg\]'
+    sed -i -e "\|${old_mms_sed}|d" "$printer_cfg"
+}
+
 include_exclude_config_files() {
     local include=$1
     local printer_cfg="${KLIPPER_CONFIG_HOME}/printer.cfg"
-    local mms_sed='\[include sample-bigtreetech-mms/mms.cfg\]'
+    local mms_sed='\[include sample-bigtreetech-mms/mms/mms.cfg\]'
     if [ -f "${printer_cfg}" ]; then
         if [ "${include}" -eq 0 ]; then
             sed -i -e "\|${mms_sed}|d" "$printer_cfg"
@@ -697,6 +703,9 @@ set_user_config() {
 }
 
 install_vivid() {
+    # uninstall for cleanup
+    uninstall_cleanup
+
     set_serial_id
     set_cutter
     set_entry_sensor
@@ -749,11 +758,17 @@ install_vivid() {
     echo -e "${GREEN}${SECTION}ViViD installation is complete.${INPUT}"
 }
 
-uninstall_vivid() {
+
+uninstall_cleanup() {
+    cleaup_old_resource
     uninstall_klippy
     uninstall_KlipperScreen
     # exclude in printer.cfg
     include_exclude_config_files 0
+}
+
+uninstall_vivid() {
+    uninstall_cleanup
 
     echo -e "${INPUT}"
 
