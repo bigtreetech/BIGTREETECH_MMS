@@ -482,7 +482,7 @@ uninstall_klippy() {
         fi
         echo -e "${INFO}ViViD for klipper uninstallation completed!"
     else
-        abort "ViViD not uninstalled because ${PURPLE}${extras_dst_dir}${ERROR} directory not found!"
+        echo -e "${WARNING}ViViD not uninstalled because ${PURPLE}${extras_dst_dir}${WARNING} directory not found!${INPUT}"
     fi
 }
 
@@ -640,7 +640,7 @@ uninstall_KlipperScreen() {
 
         echo -e "${INFO}ViViD for klipper uninstallation completed!"
     else
-        abort "ViViD KlipperScreen not uninstalled because ${PURPLE}${ks_dir}${ERROR} directory not found!"
+        echo -e "${WARNING}ViViD KlipperScreen not uninstalled because ${PURPLE}${ks_dir}${WARNING} directory not found!${INPUT}"
     fi
 }
 
