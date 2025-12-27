@@ -71,7 +71,7 @@ aht30_patch_id="1f43be0b8b55d90753578d06ac06356d1ab9a768"
 # The oldest version supported
 ks_oldest_id="b3115f9b9b329642d4dbf0ad225ab065ea3eda80"
 # The latest version supported. usually is the latest version of the upstream
-ks_latest_id="39eaa27eb3f40a33dec567c26cf94ec987967c14"
+ks_latest_id="0747a7a150a592be2b555d86b1f1aef6632cfec9"
 
 function nextfilename {
     local name="$1"
@@ -636,7 +636,7 @@ uninstall_KlipperScreen() {
 
         # unpatch screen.py & panels/gcodes.py
         unpatch_KlipperScreen
-        echo -e "${INFO}ViViD ${PURPLE}${screen}&${gcodes}${INFO} unpatched!"
+        echo -e "${INFO}ViViD ${PURPLE}${screen} & ${gcodes}${INFO} unpatched!"
 
         echo -e "${INFO}ViViD for klipper uninstallation completed!"
     else

@@ -1,6 +1,6 @@
 ### Compatibility
-* Klipper: compatible between [Commits on Nov 27, 2025: stm32: f0 i2c clean nackcf interrupt on handle](https://github.com/Klipper3d/klipper/commit/938300f3c3cc25448c499a3a8ca5b47b7a6d4fa8) and the lastest version [Commits on Dec 1, 2025: ads1x1x: Interface for "QUERY_ADC" (#7132)](https://github.com/Klipper3d/klipper/commit/9c84895a09fa408b2838ce85a2540ee7d4eeb117). The stepper scheduling uses the newly updated `motion_queuing.py` upstream of Klipper, so it is necessary to use the new version of Klipper.
-* KlipperScreen: compatible between [Commits on Sep 12, 2025: refactor: less logging when on battery](https://github.com/KlipperScreen/KlipperScreen/commit/b3115f9b9b329642d4dbf0ad225ab065ea3eda80) and the lastest version [Commits on Nov 29, 2025: fix: handle invalid UTF-8 characters in WiFi SSID (#1621)](https://github.com/KlipperScreen/KlipperScreen/commit/61f7afd1e21f7b022e7a6bfb29992d3c396a5c50). In theory, earlier KlipperScreen also supports it, but it has not been actually tested yet.
+* Klipper: compatible between [Commits on Nov 27, 2025: stm32: f0 i2c clean nackcf interrupt on handle](https://github.com/Klipper3d/klipper/commit/938300f3c3cc25448c499a3a8ca5b47b7a6d4fa8) and the lastest version [Commits on Dec 24, 2025: _klipper3d: Make sure custom css file is preserved](https://github.com/Klipper3d/klipper/commit/5d24122c0439a2be020622dea161cab54ebe24be). The stepper scheduling uses the newly updated `motion_queuing.py` upstream of Klipper, so it is necessary to use the new version of Klipper.
+* KlipperScreen: compatible between [Commits on Sep 12, 2025: refactor: less logging when on battery](https://github.com/KlipperScreen/KlipperScreen/commit/b3115f9b9b329642d4dbf0ad225ab065ea3eda80) and the lastest version [Commits on Dec 27, 2025: Fix: vertical mode not updating properly on screen size change (#1631)](https://github.com/KlipperScreen/KlipperScreen/commit/0747a7a150a592be2b555d86b1f1aef6632cfec9). In theory, earlier KlipperScreen also supports it, but it has not been actually tested yet.
 * Python: Only supports Klipper for Python 3 environment.
 
 ### Installation
@@ -38,6 +38,18 @@
     * `-g`: get version
 
     * no flags for default `-i` install
+
+### Flash
+Both ViViD and Buffer MCU have built-in [Katapult (formerly known as CanBoot)](https://github.com/Arksine/katapult) for updating Klipper firmware.
+
+We recommend using the `flash.sh` script provided here to update the firmware of ViViD and Buffer, rather than directly using the Katapult command, as there will be an additional step to verify the binary content of the firmware, try to avoid startup issues caused by flashing incorrect firmware as much as possible.
+
+`flash.sh` will list devices with serial id containing `vivid` or `buffer`, select the device ID we want to flash to start flashing. If no parameter are included, the [factory firmware](./firmware/) will be flashed by default. We can also specify the binary file to be flashed through the `-f` parameter.
+
+for example:
+
+* `flash.sh`
+* `flash.sh -f ~/klipper/out/klipper.bin`
 
 ### 🐇 Acknowledgements
 The script implementation referenced the logic and some source code from the excellent project [Happy-Hare](https://github.com/moggieuk/Happy-Hare).
