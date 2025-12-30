@@ -8,8 +8,8 @@
 
     ```
     cd ~
-    git clone https://github.com/bigtreetech/BIGTREETECH_ViViD.git
-    cd ~/BIGTREETECH_ViViD
+    git clone https://github.com/bigtreetech/BIGTREETECH_MMS.git
+    cd ~/BIGTREETECH_MMS
     ```
 * Start Installation
 

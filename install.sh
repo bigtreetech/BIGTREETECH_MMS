@@ -201,7 +201,7 @@ self_update() {
     set +e
     git diff --quiet --exit-code "origin/$BRANCH"
     if [ $? -eq 1 ]; then
-        echo -e "${B_GREEN}Found a new version of BIGTREETECH_ViViD on github, updating..."
+        echo -e "${B_GREEN}Found a new version of BIGTREETECH_MMS on github, updating..."
         [ -n "$(git status --porcelain)" ] && {
             git stash push -m 'local changes stashed before self update' --quiet
         }
