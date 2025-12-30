@@ -423,19 +423,19 @@ uninstall_klippy() {
     if [ -d "${extras_dst_dir}" ]; then
         # unlink extras/mms/*.py
         rm -rf "${extras_dst_dir}/mms"
-        log_echo "${INFO}ViViD ${PURPLE}${extras_dst_dir}${INFO} removed!"
+        log_echo "${PURPLE}${extras_dst_dir}${INFO} removed!"
         # unpatch neopixel
         if [[ -f "${neopixel}" ]]; then
             sed -i 's/^[[:space:]]*#[[:space:]]*BIT_MAX_TIME=.000004/BIT_MAX_TIME=.000004/' "${neopixel}"
             sed -i '/^BIT_MAX_TIME=.000030/d' "${neopixel}"
-            log_echo "${INFO}ViViD ${PURPLE}${neopixel}${INFO} unpatched!"
+            log_echo "${PURPLE}${neopixel}${INFO} unpatched!"
         fi
         # unpatch aht30
         if [ "${g_aht30_patch}" == 1 ]; then
             if [[ -f "${aht30}" ]]; then
                 sed -i '/^#\s*'\''INIT'\''\s*:\[0xE1, 0x08, 0x00\],$/ s/^# //'  "${aht30}"
                 sed -i '/^[[:space:]]*'\''INIT'\''[[:space:]]*:[[:space:]]*\[0xBE, 0x08, 0x00\],$/d' "${aht30}"
-                log_echo "${INFO}ViViD ${PURPLE}${aht30}${INFO} unpatched!"
+                log_echo "${PURPLE}${aht30}${INFO} unpatched!"
             fi
         fi
         log_echo "${INFO}ViViD for klipper uninstallation completed!"
@@ -467,7 +467,6 @@ include_exclude_config_files() {
     local include=$1
     local printer_cfg="${KLIPPER_CONFIG_HOME}/printer.cfg"
     local mms_sed='\[include sample-bigtreetech-mms/mms/mms.cfg\]'
-    log_echo "${TITLE}${SECTION}"
     if [ -f "${printer_cfg}" ]; then
         if [ "${include}" -eq 0 ]; then
             sed -i -e "\|${mms_sed}|d" "$printer_cfg"
@@ -649,9 +648,18 @@ set_user_config() {
     fi
 }
 
+cleanup_before_install() {
+    log_disable
+    cleaup_old_resource
+    uninstall_klippy
+    include_exclude_config_files 0
+    uninstall_KlipperScreen
+    log_enable
+}
+
 install_vivid() {
     # uninstall for cleanup
-    uninstall_cleanup
+    cleanup_before_install
 
     set_serial_id
     set_cutter
@@ -660,6 +668,7 @@ install_vivid() {
 
     install_klippy
 
+    log_echo "${TITLE}${SECTION}"
     # vivid config files
     copy_config_files
     set_user_config
@@ -703,20 +712,11 @@ install_vivid() {
     log_echo "${GREEN}ViViD installation is complete."
 }
 
-
-uninstall_cleanup() {
-    log_disable
-    cleaup_old_resource
-    uninstall_klippy
-    uninstall_KlipperScreen
-    # exclude in printer.cfg
-    include_exclude_config_files 0
-    log_enable
-}
-
 uninstall_vivid() {
-    uninstall_cleanup
+    cleaup_old_resource
 
+    uninstall_klippy
+    include_exclude_config_files 0
     yn=$(prompt_yn "Klipper has been uninstalled. Restart immediately? (This will interrupt printing if there are any ongoing tasks.)")
     echo
     if [ "$yn" = "y" ]; then
@@ -726,6 +726,7 @@ uninstall_vivid() {
         log_echo "${WARNING}The Klipper service needs to be restarted for it to take effect. Please manually restart it later."
     fi
 
+    uninstall_KlipperScreen
     yn=$(prompt_yn "KlipperScreen has been installed. Restart immediately? (This may interrupt printing if there are any ongoing tasks.)")
     echo
         if [ "$yn" = "y" ]; then
