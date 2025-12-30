@@ -32,7 +32,7 @@ WARNING="${B_YELLOW}"
 PROMPT="${CYAN}"
 DIM="${PURPLE}"
 INPUT="${OFF}"
-SECTION="----------------\n"
+SECTION="\n----------------"
 
 SHELL_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )"/ && pwd )"
 
@@ -60,6 +60,7 @@ g_entry_sensor=0
 g_purge_brush=0
 g_aht30_patch=0
 g_klippe_screen=0
+g_log_en=1
 
 # The oldest version supported
 klipper_oldest_id="938300f3c3cc25448c499a3a8ca5b47b7a6d4fa8"
@@ -71,6 +72,22 @@ aht30_patch_id="1f43be0b8b55d90753578d06ac06356d1ab9a768"
 ks_oldest_id="b3115f9b9b329642d4dbf0ad225ab065ea3eda80"
 # The latest version supported. usually is the latest version of the upstream
 ks_latest_id="0747a7a150a592be2b555d86b1f1aef6632cfec9"
+
+log_enable() {
+    g_log_en=1
+}
+
+log_disable() {
+    g_log_en=0
+}
+
+log_echo() {
+    if [ "${g_log_en}" -eq 0 ]; then
+        return
+    fi
+    log_text=${1}
+    echo -e "${log_text}${INPUT}"
+}
 
 function nextfilename {
     local name="$1"
@@ -99,67 +116,11 @@ prompt_yn() {
     done
 }
 
-prompt_123() {
-    prompt=$1
-    max=$2
-    while true; do
-        if [ -z "${max}" ]; then
-            read -ep "${prompt}? " number
-        elif [[ "${max}" -lt 10 ]]; then
-            read -ep "${prompt} (1-${max})? " -n1 number
-        else
-            read -ep "${prompt} (1-${max})? " number
-        fi
-        if ! [[ "$number" =~ ^-?[0-9]+$ ]] ; then
-            echo -e "Invalid value." >&2
-            continue
-        fi
-        if [ "$number" -lt 1 ]; then
-            echo -e "Value must be greater than 0." >&2
-            continue
-        fi
-        if [ -n "$max" ] && [ "$number" -gt "$max" ]; then
-            echo -e "Value must be less than $((max+1))." >&2
-            continue
-        fi
-        echo ${number}
-        break
-    done
-}
-
-prompt_option() {
-    local var_name="$1"
-    local query="$2"
-    shift 2
-    local i=0
-    for val in "$@"; do
-        i=$((i+1))
-        echo "$i) $val"
-    done
-    REPLY=$(prompt_123 "$query" "$#")
-    declare -g $var_name="${!REPLY}"
-}
-option() {
-    local var_name="$1"
-    local desc="$2"
-    declare -g $var_name="${desc}"
-    OPTIONS+=("$desc")
-}
-option_del() {
-    local desc="$1"
-    local new_opts=()
-    for v in "${OPTIONS[@]}"; do
-        [[ "$v" == "$desc" ]] && continue
-        new_opts+=("$v")
-    done
-    OPTIONS=("${new_opts[@]}")
-}
-
 abort(){
     if [ ! $# -eq 0 ]; then
-        echo -e "${ERROR}$1${INPUT}"
+        log_echo "${ERROR}$1"
     fi
-    echo -e "${ERROR}Installation has been aborted!${INPUT}"
+    log_echo "${ERROR}Installation has been aborted!"
     exit -1
 }
 
@@ -179,28 +140,28 @@ self_update() {
     fi
 
     if [ $? -ne 0 ]; then
-        echo -e "${ERROR}Error updating from github"
-        echo -e "${ERROR}You might have an old version of git"
-        echo -e "${ERROR}Skipping automatic update..."
+        log_echo "${ERROR}Error updating from github"
+        log_echo "${ERROR}You might have an old version of git"
+        log_echo "${ERROR}Skipping automatic update..."
         set -e
         return
     fi
     set -e
 
     [ -z "${BRANCH}" ] && {
-        echo -e "${ERROR}Timeout talking to github. Skipping upgrade check"
+        log_echo "${ERROR}Timeout talking to github. Skipping upgrade check"
         return
     }
-    echo -e "${B_GREEN}Running on '${BRANCH}' branch"
+    log_echo "${B_GREEN}Running on '${BRANCH}' branch"
 
     # Both check for updates but also help me not loose changes accidently
-    echo -e "${B_GREEN}Checking for updates..."
+    log_echo "${B_GREEN}Checking for updates..."
     git fetch --quiet
 
     set +e
     git diff --quiet --exit-code "origin/$BRANCH"
     if [ $? -eq 1 ]; then
-        echo -e "${B_GREEN}Found a new version of BIGTREETECH_MMS on github, updating..."
+        log_echo "${B_GREEN}Found a new version of BIGTREETECH_MMS on github, updating..."
         [ -n "$(git status --porcelain)" ] && {
             git stash push -m 'local changes stashed before self update' --quiet
         }
@@ -215,14 +176,14 @@ self_update() {
             git pull --quiet --force origin $BRANCH
         fi
         GIT_VER=$(git describe --tags)
-        echo -e "${B_GREEN}Now on git version ${GIT_VER}"
-        echo -e "${B_GREEN}Running the new install script..."
+        log_echo "${B_GREEN}Now on git version ${GIT_VER}"
+        log_echo "${B_GREEN}Running the new install script..."
         cd - >/dev/null
         exec "$SCRIPTNAME" "${ARGS[@]}"
         exit 0 weg# Exit this old instance
     fi
     GIT_VER=$(git describe --tags)
-    echo -e "${B_GREEN}Already the latest version: ${GIT_VER}"
+    log_echo "${B_GREEN}Already the latest version: ${GIT_VER}"
 }
 
 verify_not_root() {
@@ -254,9 +215,10 @@ verify_version() {
 
         if [ ! -z "${err_oldest}" ] || [ ! -z "${err_lastest}" ]; then
             local commit_id=$(git -C ${dir} describe --tags)
-            echo -e "${WARNING}${SECTION}Your ${name} version is: ${PURPLE}${commit_id}${WARNING}
+            log_echo "${TITLE}${SECTION}"
+            log_echo "${WARNING}Your ${name} version is: ${PURPLE}${commit_id}${WARNING}
 not between ${PURPLE}${oldest}${WARNING} and ${PURPLE}${latest}${WARNING}
-${err_oldest}${err_lastest}may not be suitable, it is best to update ${name} version as suggested.${INPUT}"
+${err_oldest}${err_lastest}may not be suitable, it is best to update ${name} version as suggested."
             yn=$(prompt_yn "I confirm that this version of ${name} is compatible with ViViD.")
             echo
             if [ "$yn" = "n" ]; then
@@ -275,12 +237,12 @@ verify_home_dirs() {
             g_aht30_patch=1
         fi
     else
-        echo -e "${ERROR}Klipper home directory (${PURPLE}${KLIPPER_HOME}${ERROR}) not found."
+        log_echo "${ERROR}Klipper home directory (${PURPLE}${KLIPPER_HOME}${ERROR}) not found."
         abort
     fi
 
     if [ ! -d "${KLIPPER_CONFIG_HOME}" ]; then
-        echo -e "${ERROR}Klipper config directory (${PURPLE}${KLIPPER_CONFIG_HOME}${ERROR}) not found."
+        log_echo "${ERROR}Klipper config directory (${PURPLE}${KLIPPER_CONFIG_HOME}${ERROR}) not found."
         abort
     fi
 
@@ -292,8 +254,9 @@ verify_home_dirs() {
 set_serial_id() {
     mapfile -t ids < <(ls /dev/serial/by-id/ | grep "vivid\|buffer" 2>/dev/null)
     local ids_num=${#ids[@]}
+    log_echo "${TITLE}${SECTION}"
     if [ "${ids_num}" == 0 ]; then
-        echo -e "${WARNING}${SECTION}Device serial id not found, please confirm if the ViViD cable is properly plugged in.${INPUT}"
+        log_echo "${WARNING}Device serial id not found, please confirm if the ViViD cable is properly plugged in."
         yn=$(prompt_yn "Do not configure the serial id for now, manually modify it after installation is complete.")
         echo
         if [ "$yn" = "n" ]; then
@@ -301,7 +264,7 @@ set_serial_id() {
         fi
     else
         if [ "${ids_num}" == 1 ]; then
-            echo -e "${WARNING}${SECTION}Only 1 serial id was found. ViViD requires at least 2(ViViD + buffer). Please confirm if the ViViD cable is properly plugged in.${INPUT}"
+            log_echo "${WARNING}Only 1 serial id was found. ViViD requires at least 2(ViViD + buffer). Please confirm if the ViViD cable is properly plugged in."
             yn=$(prompt_yn "Configure one first, and manually modify the rest after installation is complete.")
             echo
             if [ "$yn" = "n" ]; then
@@ -311,14 +274,14 @@ set_serial_id() {
 
         for id in "${ids[@]}"; do
             if [[ "$id" == *"vivid"* ]]; then
-                echo -e "${PROMPT}Is ${PURPLE}${id}${PROMPT} a ${PURPLE}ViViD${PROMPT} serial port?${INPUT}"
+                log_echo "${PROMPT}Is ${PURPLE}${id}${PROMPT} a ${PURPLE}ViViD${PROMPT} serial port?"
                 yn=$(prompt_yn "ViViD MCU serial id")
                 echo
                 if [ "$yn" = "y" ]; then
                     g_vivid_id=${id}
                 fi
             elif [[ "$id" == *"buffer"* ]]; then
-                echo -e "${PROMPT}Is ${PURPLE}${id}${PROMPT} a ${PURPLE}Buffer${PROMPT} serial port?${INPUT}"
+                log_echo "${PROMPT}Is ${PURPLE}${id}${PROMPT} a ${PURPLE}Buffer${PROMPT} serial port?"
                 yn=$(prompt_yn "Buffer MCU serial id")
                 echo
                 if [ "$yn" = "y" ]; then
@@ -331,11 +294,12 @@ set_serial_id() {
 
 set_cutter() {
     # Cutter
-    echo -e "${PROMPT}${SECTION}Installing the ${PURPLE}Cutter${PROMPT} is crucial!${INPUT}"
+    log_echo "${TITLE}${SECTION}"
+    log_echo "${PROMPT}Installing the ${PURPLE}Cutter${PROMPT} is crucial!"
     yn=$(prompt_yn "Has the cutter been installed?")
     echo
     if [ "$yn" = "n" ]; then
-        echo -e "${ERROR}Installing a cutter is crucial, printing multi-colors may damage the ViViD and the printer without a cutter.${INPUT}"
+        log_echo "${ERROR}Installing a cutter is crucial, printing multi-colors may damage the ViViD and the printer without a cutter."
         yn=$(prompt_yn "Continue first, the cutter will be installed later.")
         echo
         if [ "$yn" = "n" ]; then
@@ -347,11 +311,12 @@ set_cutter() {
 
 set_entry_sensor() {
     # Entry sensor
-    echo -e "${PROMPT}${SECTION}Installing an ${PURPLE}Entry Sensor${PROMPT} in toolhead can improve the accuracy of ViViD in identifying the location of filament!${INPUT}"
+    log_echo "${TITLE}${SECTION}"
+    log_echo "${PROMPT}Installing an ${PURPLE}Entry Sensor${PROMPT} in toolhead can improve the accuracy of ViViD in identifying the location of filament!"
     yn=$(prompt_yn "Has the entry sensor been installed?")
     echo
     if [ "$yn" = "n" ]; then
-        echo -e "${WARNING}Installing an entry sensor is highly recommended, as it can improve the accuracy of ViViD in identifying the location of filament.${INPUT}"
+        log_echo "${WARNING}Installing an entry sensor is highly recommended, as it can improve the accuracy of ViViD in identifying the location of filament."
         yn=$(prompt_yn "Do you still want to continue without entry sensor?")
         echo
         if [ "$yn" = "n" ]; then
@@ -364,9 +329,10 @@ set_entry_sensor() {
 }
 
 set_purge_brush() {
-    echo -e "${PROMPT}${SECTION}If ${PURPLE}purge${PROMPT} is enabled, the old filament can be quickly purged out."
-    echo -e "If ${PURPLE}brush${PROMPT} is enabled, it will clean up scrap stuck to the nozzle with a brush before start/resume printing."
-    echo -e "Do you want to enable ${PURPLE}purge${PROMPT} and ${PURPLE}brush${INPUT}?"
+    log_echo "${TITLE}${SECTION}"
+    log_echo "${PROMPT}If ${PURPLE}purge${PROMPT} is enabled, the old filament can be quickly purged out."
+    log_echo "If ${PURPLE}brush${PROMPT} is enabled, it will clean up scrap stuck to the nozzle with a brush before start/resume printing."
+    log_echo "Do you want to enable ${PURPLE}purge${PROMPT} and ${PURPLE}brush"
     yn=$(prompt_yn "Enable")
     echo
     if [ "$yn" = "n" ]; then
@@ -378,7 +344,8 @@ set_purge_brush() {
 
 set_klipper_screen() {
     # KlipperScreen
-    echo -e "${PROMPT}${SECTION}Installing ${PURPLE}KlipperScreen for ViViD${PROMPT} will add a ViViD management menu to KlipperScreen.${INPUT}"
+    log_echo "${TITLE}${SECTION}"
+    log_echo "${PROMPT}Installing ${PURPLE}KlipperScreen for ViViD${PROMPT} will add a ViViD management menu to KlipperScreen."
     yn=$(prompt_yn "Install KlipperScreen?")
     echo
     if [ "$yn" = "n" ]; then
@@ -390,14 +357,16 @@ set_klipper_screen() {
 
 get_version() {
     VIVID_VER=$(git describe --tags)
-    echo -e "${B_GREEN}${SECTION}ViViD script: ${VIVID_VER}"
-    echo -e "Klipper: ${KLIPPY_VERSION}"
-    echo -e "KlipperScreen: ${KLIPPER_SCREEN_VERSION}${INPUT}"
+    log_echo "${TITLE}${SECTION}"
+    log_echo "${INFO}ViViD script: ${B_GREEN}${VIVID_VER}"
+    log_echo "${INFO}Klipper: ${B_GREEN}${KLIPPY_VERSION}"
+    log_echo "${INFO}KlipperScreen: ${B_GREEN}${KLIPPER_SCREEN_VERSION}"
 }
 
 install_klippy() {
     # install klipper
-    echo -e "${INFO}${SECTION}Installing ViViD to Klipper: ${PURPLE}${KLIPPY_VERSION}"
+    log_echo "${TITLE}${SECTION}"
+    log_echo "${INFO}Installing ViViD to Klipper: ${PURPLE}${KLIPPY_VERSION}"
     if [ -d "${extras_dst_dir}" ]; then
         # link extras/mms/*.py
         # cd to ViViD source code path
@@ -418,15 +387,15 @@ install_klippy() {
             done
             shopt -u nullglob
         done
-        echo -e "${INFO}ViViD ${PURPLE}${extras_dst_dir}${INFO} link completed!"
+        log_echo "${INFO}ViViD ${PURPLE}${extras_dst_dir}${INFO} link completed!"
         # patch neopixel
         if [[ -f "${neopixel}" ]]; then
             sed -i '/^BIT_MAX_TIME=.000004/ { s/^/# /; a\
 BIT_MAX_TIME=.000030
             }' "${neopixel}"
-            echo -e "${INFO}ViViD ${PURPLE}${neopixel}${INFO} patch completed!"
+            log_echo "${INFO}ViViD ${PURPLE}${neopixel}${INFO} patch completed!"
         else
-            echo -e "${WARNING}ViViD ${PURPLE}${neopixel}${INFO} not patched!"
+            log_echo "${WARNING}ViViD ${PURPLE}${neopixel}${INFO} not patched!"
         fi
 
         # patch aht30
@@ -435,13 +404,13 @@ BIT_MAX_TIME=.000030
                 sed -i '/^[[:space:]]*'"'"'INIT'"'"'[[:space:]]*:[[:space:]]*\[0xE1, 0x08, 0x00\],/ { s/^/# /; a\
     '"'"'INIT'"'"'              :[0xBE, 0x08, 0x00],
                 }' "${aht30}"
-                echo -e "${INFO}ViViD ${PURPLE}${aht30}${INFO} patch completed!"
+                log_echo "${INFO}ViViD ${PURPLE}${aht30}${INFO} patch completed!"
             else
-                echo -e "${WARNING}ViViD ${PURPLE}${aht30}${INFO} not patched!"
+                log_echo "${WARNING}ViViD ${PURPLE}${aht30}${INFO} not patched!"
             fi
         fi
 
-        echo -e "${INFO}ViViD for klipper installation completed!"
+        log_echo "${INFO}ViViD for klipper installation completed!"
     else
         abort "ViViD not installed because ${PURPLE}${extras_dst_dir}${ERROR} directory not found!"
     fi
@@ -449,28 +418,29 @@ BIT_MAX_TIME=.000030
 
 uninstall_klippy() {
     # uninstall klipper
-    echo -e "${INFO}${SECTION}Unlinking ViViD from Klipper..."
+    log_echo "${TITLE}${SECTION}"
+    log_echo "${INFO}Unlinking ViViD from Klipper..."
     if [ -d "${extras_dst_dir}" ]; then
         # unlink extras/mms/*.py
         rm -rf "${extras_dst_dir}/mms"
-        echo -e "${INFO}ViViD ${PURPLE}${extras_dst_dir}${INFO} removed!"
+        log_echo "${INFO}ViViD ${PURPLE}${extras_dst_dir}${INFO} removed!"
         # unpatch neopixel
         if [[ -f "${neopixel}" ]]; then
             sed -i 's/^[[:space:]]*#[[:space:]]*BIT_MAX_TIME=.000004/BIT_MAX_TIME=.000004/' "${neopixel}"
             sed -i '/^BIT_MAX_TIME=.000030/d' "${neopixel}"
-            echo -e "${INFO}ViViD ${PURPLE}${neopixel}${INFO} unpatched!"
+            log_echo "${INFO}ViViD ${PURPLE}${neopixel}${INFO} unpatched!"
         fi
         # unpatch aht30
         if [ "${g_aht30_patch}" == 1 ]; then
             if [[ -f "${aht30}" ]]; then
                 sed -i '/^#\s*'\''INIT'\''\s*:\[0xE1, 0x08, 0x00\],$/ s/^# //'  "${aht30}"
                 sed -i '/^[[:space:]]*'\''INIT'\''[[:space:]]*:[[:space:]]*\[0xBE, 0x08, 0x00\],$/d' "${aht30}"
-                echo -e "${INFO}ViViD ${PURPLE}${aht30}${INFO} unpatched!"
+                log_echo "${INFO}ViViD ${PURPLE}${aht30}${INFO} unpatched!"
             fi
         fi
-        echo -e "${INFO}ViViD for klipper uninstallation completed!"
+        log_echo "${INFO}ViViD for klipper uninstallation completed!"
     else
-        echo -e "${WARNING}ViViD not uninstalled because ${PURPLE}${extras_dst_dir}${WARNING} directory not found!${INPUT}"
+        log_echo "${WARNING}ViViD not uninstalled because ${PURPLE}${extras_dst_dir}${WARNING} directory not found!"
     fi
 }
 
@@ -481,9 +451,9 @@ copy_config_files() {
 
     if [ -d "${dst_dir}" ]; then
         mv "${dst_dir}" "${next_dst_dir}"
-        echo -e "${INFO}Old config backup completed: ${PURPLE}${next_dst_dir}${INPUT}"
+        log_echo "${INFO}Old config backup completed: ${PURPLE}${next_dst_dir}"
     fi
-    echo -e "${INFO}Copying ${PURPLE}${src_dir}${INFO} into ${PURPLE}${dst_dir}${INFO} directory...${INPUT}"
+    log_echo "${INFO}Copying ${PURPLE}${src_dir}${INFO} into ${PURPLE}${dst_dir}${INFO} directory..."
     cp -r "${src_dir}" "${dst_dir}"
 }
 
@@ -497,21 +467,22 @@ include_exclude_config_files() {
     local include=$1
     local printer_cfg="${KLIPPER_CONFIG_HOME}/printer.cfg"
     local mms_sed='\[include sample-bigtreetech-mms/mms/mms.cfg\]'
+    log_echo "${TITLE}${SECTION}"
     if [ -f "${printer_cfg}" ]; then
         if [ "${include}" -eq 0 ]; then
             sed -i -e "\|${mms_sed}|d" "$printer_cfg"
-            echo -e "${INFO}ViViD config has been removed from ${PURPLE}${printer_cfg}"
+            log_echo "${INFO}ViViD config has been removed from ${PURPLE}${printer_cfg}"
         else
             local already_included=$(grep -c "^${mms_sed}" ${printer_cfg} || true)
             if [ "${already_included}" -eq 0 ]; then
                 sed -i "1i ${mms_sed}" ${printer_cfg}
-                echo -e "${INFO}ViViD config has been added to ${PURPLE}${printer_cfg}"
+                log_echo "${INFO}ViViD config has been added to ${PURPLE}${printer_cfg}"
             else
-                echo -e "${INFO}ViViD config already exists in ${PURPLE}${printer_cfg}${INFO} there is no need to add it again"
+                log_echo "${INFO}ViViD config already exists in ${PURPLE}${printer_cfg}${INFO} there is no need to add it again"
             fi
         fi
     else
-        echo -e "${WARNING}Klipper config file ${PURPLE}${printer_cfg}${WARNING} not found!"
+        log_echo "${WARNING}Klipper config file ${PURPLE}${printer_cfg}${WARNING} not found!"
     fi
 }
 
@@ -537,7 +508,8 @@ unpatch_KlipperScreen() {
 
 install_KlipperScreen() {
     # install KlipperScreen
-    echo -e "${INFO}${SECTION}Installing ViViD to KlipperScreen ${PURPLE}${KLIPPER_SCREEN_VERSION}"
+    log_echo "${TITLE}${SECTION}"
+    log_echo "${INFO}Installing ViViD to KlipperScreen ${PURPLE}${KLIPPER_SCREEN_VERSION}"
     if [ -d "${ks_dir}" ]; then
         # link KlipperScreen/vivid/*.{py,css,svg}
         # cd to ViViD source code path
@@ -559,7 +531,7 @@ install_KlipperScreen() {
             shopt -u nullglob
         done
 
-        echo -e "${INFO}ViViD ${PURPLE}${ks_dst_dir}${INFO} link completed!"
+        log_echo "${INFO}ViViD ${PURPLE}${ks_dst_dir}${INFO} link completed!"
 
         # unpatch, avoid duplicate patches
         unpatch_KlipperScreen
@@ -573,9 +545,9 @@ from vivid.installer import install_vivid' "${screen}"
             sed -i '/^[[:space:]]*self\._ws\.klippy\.object_subscription(requested_updates)[[:space:]]*$/i\
         requested_updates['\''objects'\'']["mms"] = ["slots", "steppers", "buffers"]' "${screen}"
 
-            echo -e "${INFO}ViViD KlipperScreen ${PURPLE}${screen}${INFO} patch completed!"
+            log_echo "${INFO}ViViD KlipperScreen ${PURPLE}${screen}${INFO} patch completed!"
         else
-            echo -e "${WARNING}ViViD KlipperScreen ${PURPLE}${screen}${WARNING} not patched!"
+            log_echo "${WARNING}ViViD KlipperScreen ${PURPLE}${screen}${WARNING} not patched!"
         fi
 
         # patch gcodes
@@ -605,9 +577,9 @@ EOF
 
             sed -i '\|^[[:space:]]*self.confirm_delete_file(None,[[:space:]]*f"gcodes/{filename}")[[:space:]]*$|r '"${new_gcode}"'' "${gcodes}"
             rm -f "$new_gcode"
-            echo -e "${INFO}ViViD KlipperScreen ${PURPLE}${gcodes}${INFO} patch completed!"
+            log_echo "${INFO}ViViD KlipperScreen ${PURPLE}${gcodes}${INFO} patch completed!"
         else
-            echo -e "${WARNING}ViViD KlipperScreen ${PURPLE}${gcodes}${WARNING} not patched!"
+            log_echo "${WARNING}ViViD KlipperScreen ${PURPLE}${gcodes}${WARNING} not patched!"
         fi
     else
         abort "ViViD KlipperScreen not installed because ${PURPLE}${ks_dir}${ERROR} directory not found!"
@@ -616,19 +588,20 @@ EOF
 
 uninstall_KlipperScreen() {
     # uninstall klipper
-    echo -e "${INFO}${SECTION}Unlinking ViViD from KlipperScreen..."
+    log_echo "${TITLE}${SECTION}"
+    log_echo "${INFO}Unlinking ViViD from KlipperScreen..."
     if [ -d "${ks_dir}" ]; then
         # unlink KlipperScreen/vivid/*.{py,css,svg}
         rm -rf "${ks_dst_dir}"
-        echo -e "${INFO}ViViD ${PURPLE}${ks_dst_dir}${INFO} removed!"
+        log_echo "${PURPLE}${ks_dst_dir}${INFO} removed!"
 
         # unpatch screen.py & panels/gcodes.py
         unpatch_KlipperScreen
-        echo -e "${INFO}ViViD ${PURPLE}${screen} & ${gcodes}${INFO} unpatched!"
+        log_echo "${PURPLE}${screen}${INFO} & ${PURPLE}${gcodes}${INFO} for ViViD unpatched!"
 
-        echo -e "${INFO}ViViD for klipper uninstallation completed!"
+        log_echo "${INFO}ViViD for KlipperScreen uninstallation completed!"
     else
-        echo -e "${WARNING}ViViD KlipperScreen not uninstalled because ${PURPLE}${ks_dir}${WARNING} directory not found!${INPUT}"
+        log_echo "${WARNING}ViViD KlipperScreen not uninstalled because ${PURPLE}${ks_dir}${WARNING} directory not found!"
     fi
 }
 
@@ -645,33 +618,33 @@ set_user_config() {
         sed -i 's/sensor_type:          AHT3X/sensor_type:          AHT10/g' "${aht30_cfg}"
     fi
 
-    echo -e "${PURPLE}Cutter${INFO} must be configured, please configure the specific position in ${PURPLE}${cut_path}${INPUT}"
+    log_echo "${PURPLE}Cutter${INFO} must be configured, please configure the specific position in ${PURPLE}${cut_path}"
 
     # entry sensor
     if [ "${g_entry_sensor}" -eq 1 ]; then
         sed -i -e "s|^#\s*\(entry_sensor:    EBBCan:gpio21\)|\1|" "${mms_path}"
-        echo -e "${PURPLE}Entry Sensor${INFO} has been enabled, please configure the specific pin in ${PURPLE}${mms_path}${INPUT}"
+        log_echo "${PURPLE}Entry Sensor${INFO} has been enabled, please configure the specific pin in ${PURPLE}${mms_path}"
     fi
 
     # purge_brush
     if [ "${g_purge_brush}" -eq 0 ]; then
         sed -i -e "s|enable:                  1|enable:                  0|g" "${purge_brush_path}"
     else
-        echo -e "${PURPLE}purge${INFO} and ${PURPLE}brush${INFO} has been enabled, please configure the specific position in ${PURPLE}${purge_brush_path}${INPUT}"
+        log_echo "${PURPLE}purge${INFO} and ${PURPLE}brush${INFO} has been enabled, please configure the specific position in ${PURPLE}${purge_brush_path}"
     fi
 
     # vivid seral id
     if [ -z "${g_vivid_id}" ]; then
-        echo -e "${WARNING}ViViD MCU serial id has not been set. Please modify it manually in ${PURPLE}${mms_path}${INPUT}"
+        log_echo "${WARNING}ViViD MCU serial id has not been set. Please modify it manually in ${PURPLE}${mms_path}"
     else
-        echo -e "${INFO}ViViD Serial ID: ${PURPLE}${g_vivid_id}${INPUT}"
+        log_echo "${INFO}ViViD Serial ID: ${PURPLE}${g_vivid_id}"
         sed -i "s|usb-Klipper_stm32g0b1xx_vivid-if00|${g_vivid_id}|g" "${mms_path}"
     fi
     # buffer seral id
     if [ -z "${g_buffer_id}" ]; then
-        echo -e "${WARNING}Buffer MCU serial id has not been set. Please modify it manually in ${PURPLE}${mms_path}${INPUT}"
+        log_echo "${WARNING}Buffer MCU serial id has not been set. Please modify it manually in ${PURPLE}${mms_path}"
     else
-        echo -e "${INFO}Buffer Serial ID: ${PURPLE}${g_buffer_id}${INPUT}"
+        log_echo "${INFO}Buffer Serial ID: ${PURPLE}${g_buffer_id}"
         sed -i "s|usb-Klipper_stm32f042x6_buffer-if00|${g_buffer_id}|g" "${mms_path}"
     fi
 }
@@ -693,80 +666,80 @@ install_vivid() {
     # include in printer.cfg
     include_exclude_config_files 1
 
-    echo -e "${INPUT}"
     yn=$(prompt_yn "Klipper has been installed. Restart immediately? (This will interrupt printing if there are any ongoing tasks.)")
     echo
     if [ "$yn" = "y" ]; then
         sudo systemctl restart klipper
-        echo -e "${INFO}The Klipper service has been restarted.${INPUT}"
+        log_echo "${INFO}The Klipper service has been restarted."
     else
-        echo -e "${WARNING}The Klipper service needs to be restarted for it to take effect. Please manually restart it later.${INPUT}"
+        log_echo "${WARNING}The Klipper service needs to be restarted for it to take effect. Please manually restart it later."
     fi
 
     set_klipper_screen
     if [ "${g_klippe_screen}" -eq 1 ]; then
         install_KlipperScreen
 
-        echo -e "${INPUT}"
         yn=$(prompt_yn "KlipperScreen has been installed. Restart immediately? (This may interrupt printing if there are any ongoing tasks.)")
         echo
         if [ "$yn" = "y" ]; then
             sudo systemctl restart KlipperScreen.service
-            echo -e "${INFO}The KlipperScreen service has been restarted.${INPUT}"
+            log_echo "${INFO}The KlipperScreen service has been restarted."
         else
-            echo -e "${WARNING}The KlipperScreen service needs to be restarted for it to take effect. Please manually restart it later.${INPUT}"
+            log_echo "${WARNING}The KlipperScreen service needs to be restarted for it to take effect. Please manually restart it later."
         fi
     fi
 
-    echo -e "${GREEN}${SECTION}ViViD MCU serial id: ${g_vivid_id}"
-    echo -e "Buffer MCU serial id: ${g_buffer_id}"
-    echo -e "Cutter: ${g_cutter}"
-    echo -e "Entry Sensor: ${g_entry_sensor}"
-    echo -e "Purge & Brush: ${g_purge_brush}"
-    echo -e "KlipperScreen: ${g_klippe_screen}"
+    log_echo "${TITLE}${SECTION}"
+    log_echo "${INFO}ViViD MCU serial id: ${GREEN}${g_vivid_id}"
+    log_echo "${INFO}Buffer MCU serial id: ${GREEN}${g_buffer_id}"
+    log_echo "${INFO}Cutter: ${GREEN}${g_cutter}"
+    log_echo "${INFO}Entry Sensor: ${GREEN}${g_entry_sensor}"
+    log_echo "${INFO}Purge & Brush: ${GREEN}${g_purge_brush}"
+    log_echo "${INFO}KlipperScreen: ${GREEN}${g_klippe_screen}"
 
     get_version
 
-    echo -e "${GREEN}${SECTION}ViViD installation is complete.${INPUT}"
+    log_echo "${TITLE}${SECTION}"
+    log_echo "${GREEN}ViViD installation is complete."
 }
 
 
 uninstall_cleanup() {
+    log_disable
     cleaup_old_resource
     uninstall_klippy
     uninstall_KlipperScreen
     # exclude in printer.cfg
     include_exclude_config_files 0
+    log_enable
 }
 
 uninstall_vivid() {
     uninstall_cleanup
 
-    echo -e "${INPUT}"
-
     yn=$(prompt_yn "Klipper has been uninstalled. Restart immediately? (This will interrupt printing if there are any ongoing tasks.)")
     echo
     if [ "$yn" = "y" ]; then
         sudo systemctl restart klipper
-        echo -e "${INFO}The Klipper service has been restarted.${INPUT}"
+        log_echo "${INFO}The Klipper service has been restarted."
     else
-        echo -e "${WARNING}The Klipper service needs to be restarted for it to take effect. Please manually restart it later.${INPUT}"
+        log_echo "${WARNING}The Klipper service needs to be restarted for it to take effect. Please manually restart it later."
     fi
 
     yn=$(prompt_yn "KlipperScreen has been installed. Restart immediately? (This may interrupt printing if there are any ongoing tasks.)")
     echo
         if [ "$yn" = "y" ]; then
             sudo systemctl restart KlipperScreen.service
-            echo -e "${INFO}The KlipperScreen service has been restarted.${INPUT}"
+            log_echo "${INFO}The KlipperScreen service has been restarted."
         else
-            echo -e "${WARNING}The KlipperScreen service needs to be restarted for it to take effect. Please manually restart it later.${INPUT}"
+            log_echo "${WARNING}The KlipperScreen service needs to be restarted for it to take effect. Please manually restart it later."
         fi
 
-    echo -e "${GREEN}${SECTION}ViViD uninstallation is complete.${INPUT}"
+    log_echo "${GREEN}ViViD uninstallation is complete."
 }
 
 usage() {
-    echo -e "${EMPHASIZE}"
+    log_echo "${EMPHASIZE}"
     echo "Usage: $0 [-h] [-i] [-d] [-z] [-g]"
     echo
     echo "-h for help"
@@ -798,7 +771,7 @@ fi
 
 # step 2: check
 if [ "${INSTALL}" == 1 ] && [ "${UNINSTALL}" == 1 ]; then
-    echo -e "${ERROR}Can't install and uninstall at the same time!"
+    log_echo "${ERROR}Can't install and uninstall at the same time!"
     usage
 fi
 
@@ -819,4 +792,4 @@ else
 fi
 
 # step 5: end
-echo -e "${INPUT}"
+log_echo ""
