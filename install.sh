@@ -57,8 +57,7 @@ g_vivid_id=""
 g_buffer_id=""
 g_cutter=0
 g_entry_sensor=0
-g_trash_can=0
-g_brush=0
+g_purge_brush=0
 g_aht30_patch=0
 g_klippe_screen=0
 
@@ -364,27 +363,16 @@ set_entry_sensor() {
     fi
 }
 
-set_trash_can() {
-    # Trash can
-    echo -e "${PROMPT}${SECTION}If a ${PURPLE}Trash Can${PROMPT} is installed, the old filament can be quickly purged into the trash can when loading new filament.${INPUT}"
-    yn=$(prompt_yn "Has the trash can been installed?")
+set_purge_brush() {
+    echo -e "${PROMPT}${SECTION}If ${PURPLE}purge${PROMPT} is enabled, the old filament can be quickly purged out."
+    echo -e "If ${PURPLE}brush${PROMPT} is enabled, it will clean up scrap stuck to the nozzle with a brush before start/resume printing."
+    echo -e "Do you want to enable ${PURPLE}purge${PROMPT} and ${PURPLE}brush${INPUT}?"
+    yn=$(prompt_yn "Enable")
     echo
     if [ "$yn" = "n" ]; then
-        g_trash_can=0
+        g_purge_brush=0
     else
-        g_trash_can=1
-    fi
-}
-
-set_brush() {
-    # Brush
-    echo -e "${PROMPT}${SECTION}If a ${PURPLE}Brush${PROMPT} is installed, it can clean up scrap stuck to the nozzle with a brush before start/resume printing.${INPUT}"
-    yn=$(prompt_yn "Has the brush been installed?")
-    echo
-    if [ "$yn" = "n" ]; then
-        g_brush=0
-    else
-        g_brush=1
+        g_purge_brush=1
     fi
 }
 
@@ -649,7 +637,7 @@ set_user_config() {
     local mms_path="${mms_dir}/mms/mms.cfg"
     local base_dir="${mms_dir}/base"
     local cut_path="${base_dir}/mms-cut.cfg"
-    local purge_path="${base_dir}/mms-purge.cfg"
+    local purge_brush_path="${base_dir}/mms-purge.cfg"
 
     # aht30 config [ATH10/AHT3X]
     if [ "${g_aht30_patch}" == 1 ]; then
@@ -657,26 +645,19 @@ set_user_config() {
         sed -i 's/sensor_type:          AHT3X/sensor_type:          AHT10/g' "${aht30_cfg}"
     fi
 
-    echo -e "${INFO}Cutter must be configured, please configure the specific position in ${PURPLE}${cutter}${INPUT}"
+    echo -e "${PURPLE}Cutter${INFO} must be configured, please configure the specific position in ${PURPLE}${cut_path}${INPUT}"
 
     # entry sensor
     if [ "${g_entry_sensor}" -eq 1 ]; then
         sed -i -e "s|^#\s*\(entry_sensor:    EBBCan:gpio21\)|\1|" "${mms_path}"
-        echo -e "${INFO}Entry Sensor has been enabled, please configure the specific pin in ${PURPLE}${mms_path}${INPUT}"
+        echo -e "${PURPLE}Entry Sensor${INFO} has been enabled, please configure the specific pin in ${PURPLE}${mms_path}${INPUT}"
     fi
 
-    # trash can
-    if [ "${g_trash_can}" -eq 0 ]; then
-        sed -i -e "s|enable:                  1     # Purge|enable:                  0     # Purge|g" "${purge_path}"
+    # purge_brush
+    if [ "${g_purge_brush}" -eq 0 ]; then
+        sed -i -e "s|enable:                  1|enable:                  0|g" "${purge_brush_path}"
     else
-        echo -e "${INFO}Trash can has been enabled, please configure the specific position in ${PURPLE}${purge_path}${INPUT}"
-    fi
-
-    # brush
-    if [ "${g_brush}" -eq 0 ]; then
-        sed -i -e "s|enable:                  1     # Brush|enable:                  0     # Brush|g" "${purge_path}"
-    else
-        echo -e "${INFO}Brush has been enabled, please configure the specific position in ${PURPLE}${purge_path}${INPUT}"
+        echo -e "${PURPLE}purge${INFO} and ${PURPLE}brush${INFO} has been enabled, please configure the specific position in ${PURPLE}${purge_brush_path}${INPUT}"
     fi
 
     # vivid seral id
@@ -702,8 +683,7 @@ install_vivid() {
     set_serial_id
     set_cutter
     set_entry_sensor
-    set_trash_can
-    set_brush
+    set_purge_brush
 
     install_klippy
 
@@ -742,8 +722,7 @@ install_vivid() {
     echo -e "Buffer MCU serial id: ${g_buffer_id}"
     echo -e "Cutter: ${g_cutter}"
     echo -e "Entry Sensor: ${g_entry_sensor}"
-    echo -e "Trash Can: ${g_trash_can}"
-    echo -e "Brush: ${g_brush}"
+    echo -e "Purge & Brush: ${g_purge_brush}"
     echo -e "KlipperScreen: ${g_klippe_screen}"
 
     get_version
