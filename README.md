@@ -51,6 +51,12 @@ for example:
 * `flash.sh`
 * `flash.sh -f ~/klipper/out/klipper.bin`
 
+### Config
+Please refor to [mms_config](./docs/en/mms_config.md) for details.
+
+### ChangeLog
+Please refor to [mms_changelog](./docs/en/mms_changelog.md) for details.
+
 ### 🐇 Acknowledgements
 The script implementation referenced the logic and some source code from the excellent project [Happy-Hare](https://github.com/moggieuk/Happy-Hare).
 
