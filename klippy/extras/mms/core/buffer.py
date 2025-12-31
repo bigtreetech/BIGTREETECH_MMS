@@ -93,10 +93,13 @@ class Buffer:
                 val = getattr(buffer_config, key)
                 setattr(self, key, val)
 
+        # Index of MMS Buffer
         self._index = None
         # Sensor setting
         self._sensor_full = None
         self._sensor_runout = None
+        # The slot_nums binding to current MMS Buffer
+        self._binding_slot_nums = []
 
         # Current volume
         self._volume = 0
@@ -156,6 +159,18 @@ class Buffer:
     def _initialize_task(self):
         self._p_task = PeriodicTask()
         self._p_task.set_period(self.monitor_period)
+
+    # ---- SLOTs manager ----
+    def register_slot_num(self, slot_num):
+        if slot_num not in self._binding_slot_nums:
+            self._binding_slot_nums.append(slot_num)
+
+    def has_gate_triggering(self):
+        for slot_num in self._binding_slot_nums:
+            mms_slot = self.mms.get_mms_slot(slot_num)
+            if mms_slot.gate.is_triggered():
+                return True
+        return False
 
     # ---- Monitor ----
     def _monitor(self):
@@ -242,7 +257,8 @@ class Buffer:
             return
 
         self.log_info_s(
-            "buffer volume update\n"
+            "\n"
+            "buffer volume update:\n"
             f"old: {old_volume:.2f}\n"
             f"new: {new_volume:.2f}\n"
             # f"set: {self._volume:.2f}\n"

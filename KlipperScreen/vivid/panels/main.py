@@ -323,12 +323,12 @@ class Panel(ScreenPanel):
             self.stop_heat_btn.image.update_image_file("vivid_stop_busy.svg")
 
     def start_heating(self, temperature):
-        heater = "vivid_heater"
+        heater = "ViViD_Dryer"
         script = f"SET_HEATER_TEMPERATURE HEATER={heater} TARGET={temperature}"
         self.send_klippy_script(script)
 
     def stop_heating(self):
-        heater = "vivid_heater"
+        heater = "ViViD_Dryer"
         script = f"SET_HEATER_TEMPERATURE HEATER={heater} TARGET=0"
         self.send_klippy_script(script)
 
@@ -337,7 +337,7 @@ class Panel(ScreenPanel):
             self.temp_str = f"{temp:.1f}"
 
     def get_current_temp(self):
-        # heater_device = "heater_generic vivid_heater"
+        # heater_device = "heater_generic ViViD_Dryer"
         # # May return empty dict {}
         # temp = self._printer.get_stat(heater_device, "temperature")
         # return f"{temp:.1f}" if temp else "--"

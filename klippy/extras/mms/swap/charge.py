@@ -264,13 +264,16 @@ class MMSCharge:
         self.log_info_s(f"{log_prefix} finish")
         return True
 
-    def mms_charge(self, slot_num):
-        if self.custom_before:
+    def _exec_custom_macro(self, macro, position):
+        if macro:
             self.log_info(
-                "MMS execute macro before CHARGE: "
-                f"{self.custom_before}"
+                f"MMS execute macro {position} CHARGE:\n"
+                f"{macro}"
             )
-            gcode_adapter.run_command(self.custom_before)
+            gcode_adapter.run_command(macro)
+
+    def mms_charge(self, slot_num):
+        self._exec_custom_macro(self.custom_before, "before")
 
         if not self._safety_checks(slot_num):
             return False
@@ -314,14 +317,7 @@ class MMSCharge:
                 return False
 
         self.log_info_s(f"{log_prefix} finish")
-
-        if self.custom_after:
-            self.log_info(
-                "MMS execute macro after CHARGE: "
-                f"{self.custom_after}"
-            )
-            gcode_adapter.run_command(self.custom_after)
-
+        self._exec_custom_macro(self.custom_after, "after")
         return True
 
     def mms_simple_charge(self, slot_num):

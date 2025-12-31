@@ -357,13 +357,21 @@ class MMSDelivery:
             self.log_warning(
                 f"{msg} wait selector or drive stepper idle timeout")
 
+        speed = speed if speed is not None else self.d_config.speed_drive
+        accel = accel if accel is not None else self.d_config.accel_drive
+
         self.log_info_s(f"{msg} begin")
+        self.log_info_s(
+            "\n"
+            f"slot[{slot_num}] deliver:\n"
+            f"distance: {distance:.2f} mm\n"
+            f"speed: {speed:.2f} mm/s\n"
+            f"accel: {accel:.2f} mm/s^2"
+        )
 
         # Apply select
         self.select_slot(slot_num)
         # Apply move
-        speed = speed if speed is not None else self.d_config.speed_drive
-        accel = accel if accel is not None else self.d_config.accel_drive
         mms_drive = mms_slot.get_mms_drive()
         mms_drive.update_focus_slot(slot_num)
         mms_drive.manual_move(distance, speed, accel)
@@ -387,13 +395,21 @@ class MMSDelivery:
             self.log_warning(
                 f"{msg} wait selector or drive stepper idle timeout")
 
+        speed = speed if speed is not None else self.d_config.speed_drive
+        accel = accel if accel is not None else self.d_config.accel_drive
+
         self.log_info_s(f"{msg} begin")
+        self.log_info_s(
+            "\n"
+            f"slot[{slot_num}] drip deliver:\n"
+            f"distance: {distance:.2f} mm\n"
+            f"speed: {speed:.2f} mm/s\n"
+            f"accel: {accel:.2f} mm/s^2"
+        )
 
         # Apply select
         self.select_slot(slot_num)
         # Apply drive move
-        speed = speed if speed is not None else self.d_config.speed_drive
-        accel = accel if accel is not None else self.d_config.accel_drive
         mms_drive = mms_slot.get_mms_drive()
         mms_drive.update_focus_slot(slot_num)
         # If deliver forward, enable filament fracture monitoring
@@ -753,7 +769,7 @@ class MMSDelivery:
         if abs(distance) > self.d_config.stepper_move_distance:
             self.log_warning(
                 f"slot[{slot_num}] can not move {distance}mm, "
-                "check config[stepper_move_distance]")
+                "check config'stepper_move_distance'")
             return False
 
         try:
@@ -774,7 +790,7 @@ class MMSDelivery:
         if abs(distance) > self.d_config.stepper_move_distance:
             self.log_warning(
                 f"slot[{slot_num}] can not drip move {distance}mm, "
-                "check config[stepper_move_distance]")
+                "check config'stepper_move_distance'")
             return False
 
         try:
@@ -925,6 +941,7 @@ class MMSDelivery:
             if not success or not self._can_walk():
                 break
         self.log_info("slots loop finish")
+        self.log_info("#" * 60)
 
     @log_time_cost("log_info_s")
     def mms_stop(self, slot_num=None):
@@ -971,77 +988,172 @@ class MMSDelivery:
         slot_num = gcmd.get_int("SLOT", minval=0)
         if not self.mms.slot_is_available(slot_num):
             return
-        self.deliver_async_task(self.mms_load, {"slot_num":slot_num})
+
+        should_wait = gcmd.get_int("WAIT", default=0)
+        if bool(should_wait):
+            self.mms_load(slot_num)
+        else:
+            self.deliver_async_task(
+                self.mms_load,
+                {"slot_num":slot_num}
+            )
 
     def cmd_MMS_UNLOAD(self, gcmd):
         slot_num = gcmd.get_int("SLOT", default=None, minval=0)
         if not self.mms.slot_is_available(slot_num, can_none=True):
             return
-        self.deliver_async_task(self.mms_unload, {"slot_num":slot_num})
+
+        should_wait = gcmd.get_int("WAIT", default=0)
+        if bool(should_wait):
+            self.mms_unload(slot_num)
+        else:
+            self.deliver_async_task(
+                self.mms_unload,
+                {"slot_num":slot_num}
+            )
 
     def cmd_MMS_POP(self, gcmd):
         slot_num = gcmd.get_int("SLOT", default=None, minval=0)
         if not self.mms.slot_is_available(slot_num, can_none=True):
             return
-        self.deliver_async_task(self.mms_pop, {"slot_num":slot_num})
+
+        should_wait = gcmd.get_int("WAIT", default=0)
+        if bool(should_wait):
+            self.mms_pop(slot_num)
+        else:
+            self.deliver_async_task(
+                self.mms_pop,
+                {"slot_num":slot_num}
+            )
 
     def cmd_MMS_PREPARE(self, gcmd):
         slot_num = gcmd.get_int("SLOT", minval=0)
         if not self.mms.slot_is_available(slot_num):
             return
-        self.deliver_async_task(self.mms_prepare, {"slot_num":slot_num})
+
+        should_wait = gcmd.get_int("WAIT", default=0)
+        if bool(should_wait):
+            self.mms_prepare(slot_num)
+        else:
+            self.deliver_async_task(
+                self.mms_prepare,
+                {"slot_num":slot_num}
+            )
 
     def cmd_MMS_MOVE(self, gcmd):
         slot_num = gcmd.get_int("SLOT", minval=0)
         if not self.mms.slot_is_available(slot_num):
             return
+
         valid_distance = abs(self.d_config.stepper_move_distance)
-        distance = gcmd.get_float("DISTANCE",
-            default=0.0, minval=-valid_distance, maxval=valid_distance)
-        self.deliver_async_task(
-            self.mms_move, {"slot_num":slot_num, "distance":distance})
+        distance = gcmd.get_float(
+            "DISTANCE",
+            default=0.0, minval=-valid_distance, maxval=valid_distance
+        )
+        speed = gcmd.get_float("SPEED", default=None, minval=0.0)
+        accel = gcmd.get_float("ACCEL", default=None, minval=0.0)
+
+        should_wait = gcmd.get_int("WAIT", default=0)
+        if bool(should_wait):
+            self.mms_move(slot_num, distance, speed, accel)
+        else:
+            self.deliver_async_task(
+                self.mms_move,
+                {
+                    "slot_num" : slot_num,
+                    "distance" : distance,
+                    "speed" : speed,
+                    "accel" : accel,
+                }
+            )
 
     def cmd_MMS_DRIP_MOVE(self, gcmd):
         slot_num = gcmd.get_int("SLOT", minval=0)
         if not self.mms.slot_is_available(slot_num):
             return
+
         valid_distance = abs(self.d_config.stepper_move_distance)
-        distance = gcmd.get_int("DISTANCE",
-            default=0, minval=-valid_distance, maxval=valid_distance)
-        self.deliver_async_task(
-            self.mms_drip_move, {"slot_num":slot_num, "distance":distance})
+        distance = gcmd.get_float(
+            "DISTANCE",
+            default=0.0, minval=-valid_distance, maxval=valid_distance
+        )
+        speed = gcmd.get_float("SPEED", default=None, minval=0.0)
+        accel = gcmd.get_float("ACCEL", default=None, minval=0.0)
+
+        should_wait = gcmd.get_int("WAIT", default=0)
+        if bool(should_wait):
+            self.mms_drip_move(slot_num, distance, speed, accel)
+        else:
+            self.deliver_async_task(
+                self.mms_drip_move,
+                {
+                    "slot_num" : slot_num,
+                    "distance" : distance,
+                    "speed" : speed,
+                    "accel" : accel,
+                }
+            )
 
     def cmd_MMS_SELECT(self, gcmd):
         slot_num = gcmd.get_int("SLOT", minval=0)
         if not self.mms.slot_is_available(slot_num):
             return
-        self.deliver_async_task(self.mms_select, {"slot_num":slot_num})
+
+        should_wait = gcmd.get_int("WAIT", default=0)
+        if bool(should_wait):
+            self.mms_select(slot_num)
+        else:
+            self.deliver_async_task(
+                self.mms_select,
+                {"slot_num":slot_num}
+            )
 
     def cmd_MMS_UNSELECT(self, gcmd):
         slot_num = gcmd.get_int("SLOT", minval=0)
         if not self.mms.slot_is_available(slot_num):
             return
-        self.deliver_async_task(self.mms_unselect, {"slot_num":slot_num})
+
+        should_wait = gcmd.get_int("WAIT", default=0)
+        if bool(should_wait):
+            self.mms_unselect(slot_num)
+        else:
+            self.deliver_async_task(
+                self.mms_unselect,
+                {"slot_num":slot_num}
+            )
 
     def cmd_MMS_SLOTS_WALK(self, gcmd=None):
         if not self.mms.cmd_can_exec():
             self.log_warning("MMS_SLOTS_WALK can not execute now")
             return
-        self.deliver_async_task(self.mms_slots_walk)
-        self.log_info("#" * 60)
+
+        should_wait = gcmd.get_int("WAIT", default=0)
+        if bool(should_wait):
+            self.mms_slots_walk()
+        else:
+            self.deliver_async_task(self.mms_slots_walk)
 
     def cmd_MMS_SLOTS_CHECK(self, gcmd=None):
         if not self.mms.cmd_can_exec():
             self.log_warning("MMS_SLOTS_CHECK can not execute now")
             return
-        self.deliver_async_task(self.mms_slots_check)
+
+        should_wait = gcmd.get_int("WAIT", default=0)
+        if bool(should_wait):
+            self.mms_slots_check()
+        else:
+            self.deliver_async_task(self.mms_slots_check)
 
     def cmd_MMS_SLOTS_LOOP(self, gcmd=None):
         if not self.mms.cmd_can_exec():
             self.log_warning("MMS_SLOTS_LOOP can not execute now")
             return
-        self.deliver_async_task(self.mms_slots_loop)
-        self.log_info("#" * 60)
+
+        should_wait = gcmd.get_int("WAIT", default=0)
+        if bool(should_wait):
+            self.mms_slots_loop()
+        else:
+            self.deliver_async_task(self.mms_slots_loop)
 
     def cmd_MMS_STOP(self, gcmd=None):
         if not self.mms.cmd_can_exec():

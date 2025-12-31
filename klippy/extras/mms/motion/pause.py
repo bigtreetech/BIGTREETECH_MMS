@@ -6,7 +6,7 @@
 
 from ..adapters import (
     gcode_adapter,
-    # pause_resume_adapter,
+    gcode_move_adapter,
     print_stats_adapter,
     printer_adapter,
     toolhead_adapter,
@@ -86,6 +86,8 @@ class MMSPause:
         toolhead_adapter.log_snapshot()
         # Save target temp of extruder for resume
         toolhead_adapter.save_target_temp()
+        # Always enable absolute coordinates(G90) before pause
+        gcode_move_adapter.enable_absolute_coordinates()
         # Pause with gcode command
         self.gcode_pause()
         self.log_info("mms_pause finish")

@@ -67,7 +67,7 @@ class MMSAutoload:
 
     def _initialize_gcode(self):
         commands = [
-            ("MMS_SEMI_AUTOLOAD", self.cmd_MMS_PRE_LOAD),
+            # ("MMS_SEMI_AUTOLOAD", self.cmd_MMS_PRE_LOAD),
             ("MMS_PRE_LOAD", self.cmd_MMS_PRE_LOAD),
 
             ("MMS_AUTOLOAD_ENABLE", self.cmd_MMS_AUTOLOAD_ENABLE),
@@ -267,8 +267,13 @@ class MMSAutoload:
         if not self._can_pre_load():
             return
 
-        self.mms_delivery.deliver_async_task(
-            self.mms_pre_load, {"slot_num":slot_num})
+        should_wait = gcmd.get_int("WAIT", default=0)
+        if bool(should_wait):
+            self.mms_pre_load(slot_num)
+        else:
+            self.mms_delivery.deliver_async_task(
+                self.mms_pre_load, {"slot_num":slot_num}
+            )
 
     # ---- GCode enable/disable ----
     def cmd_MMS_AUTOLOAD_ENABLE(self, gcmd):

@@ -89,15 +89,18 @@ class ToolheadAdapter(BaseAdapter):
         # wait timeout?
         if wait:
             self.log_info(
-                f"extruder[{e_name}] waiting heat to temp:{temp}...")
+                f"extruder[{e_name}] waiting heat to temp:{temp}..."
+            )
         else:
-            self.log_info(
-                f"extruder[{e_name}] heat to temp:{temp} without waiting")
+            self.log_info_s(
+                f"extruder[{e_name}] heat to temp:{temp} without waiting"
+            )
 
         heaters_adapter.set_temperature(heater, temp, wait)
         if wait:
             self.log_info(
-                f"extruder[{e_name}] finish heat to temp:{temp}")
+                f"extruder[{e_name}] finish heat to temp:{temp}"
+            )
 
     # ---- Fan ----
     @contextmanager

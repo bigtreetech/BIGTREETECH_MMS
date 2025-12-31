@@ -19,7 +19,7 @@ from vivid.components.utils import convert_css_to_gtk3
 
 @dataclass(frozen=True)
 class VividPanelConfig:
-    version: str = "0.2.0009"
+    version: str = "0.2.0010"
     welcome: str = "*"*10 + f" KlipperScreen for VVD/MMS Ver {version} Start up! " + "*"*10
     panel_prefix: str = "vivid/panels/"
 

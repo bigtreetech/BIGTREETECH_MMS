@@ -35,7 +35,7 @@ from .motion.resume import MMSResume
 @dataclass(frozen=True)
 class MMSConfig:
     # Current version
-    version: str = "0.1.0365"
+    version: str = "0.1.0372"
     # Welcome for MMS initail
     welcome: str = "*"*10 + f" MMS Ver {version} Ready for Action! " + "*"*10
 
@@ -385,7 +385,7 @@ class MMS:
         self.log_info_s(f"MMS Version: {self.mms_config.version}")
 
         if self.mms_selectors and self.mms_drives:
-            self.log_status(silent=False)
+            self.log_status(silent=True)
 
         if self.mms_selectors:
             self.log_info_s(
@@ -782,6 +782,10 @@ class MMS:
                 return True
         return False
 
+    def buffer_is_cleared(self, slot_num):
+        mms_buffer = self.get_mms_buffer(slot_num)
+        return
+
     # -- Config enable --
     def fracture_detection_is_enabled(self):
         return bool(self.p_mms_config.fracture_detection_enable)
@@ -862,15 +866,14 @@ class MMS:
                 b.get_index() : b.get_status()
                 for b in self.mms_buffers
             },
+            "loading_slots" : self.get_loading_slots()
         }
-
-    def cmd_MMS(self, gcmd):
-        self.log_info(f"MMS Version:{self.mms_config.version}")
 
     def log_status(self, silent=True):
         log_func = self.log_info_s if silent else self.log_info
         log_func(f"MMS Version: {self.mms_config.version}")
-        self.log_status_stepper(silent)
+
+        self.log_status_stepper(silent=True)
 
         info = ""
         info += "Slot pins status:\n"
@@ -885,6 +888,22 @@ class MMS:
         #         info += json.dumps(
         #             slot.get_rfid_status(), indent=4) + "\n"
         log_func(info)
+
+    def log_status_stepper(self, silent=False):
+        info = "Stepper status:\n"
+        for s in self.mms_selectors:
+            info += json.dumps(s.get_status(), indent=4) + "\n"
+        for s in self.mms_drives:
+            info += json.dumps(s.get_status(), indent=4) + "\n"
+
+        if silent:
+            self.log_info_s(info)
+        else:
+            self.log_info(info)
+
+    # -- GCode commands --
+    def cmd_MMS(self, gcmd):
+        self.log_info(f"MMS Version:{self.mms_config.version}")
 
     def cmd_MMS_STATUS(self, gcmd):
         self.log_status(silent=False)
@@ -910,18 +929,6 @@ class MMS:
         except Exception as e:
             self.log_error_s(f"MMS_SAMPLE error:{e}")
         self.log_info("MMS sample begin")
-
-    def log_status_stepper(self, silent=False):
-        info = "Stepper status:\n"
-        for s in self.mms_selectors:
-            info += json.dumps(s.get_status(), indent=4) + "\n"
-        for s in self.mms_drives:
-            info += json.dumps(s.get_status(), indent=4) + "\n"
-
-        if silent:
-            self.log_info_s(info)
-        else:
-            self.log_info(info)
 
     def cmd_MMS_STATUS_STEPPER(self, gcmd):
         self.log_status_stepper()

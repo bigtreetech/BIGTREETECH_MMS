@@ -16,7 +16,10 @@ from ..adapters import (
     toolhead_adapter,
 )
 from ..core.config import OptionalField, PrinterConfig
-from ..core.exceptions import SwapFailedSignal
+from ..core.exceptions import (
+    EjectFailedError,
+    SwapFailedSignal
+)
 from ..core.logger import log_time_cost
 
 
@@ -150,14 +153,14 @@ class MMSSwap:
 
     def _reset_mapping(self):
         self.log_info_s(
-            f"reset current mapping:{self.mapping} to default")
+            f"reset current swap mapping:{self.mapping} to default")
         self._initialize_mapping()
 
     def _init_mapping_filename(self):
         if self.mapping["filename"] is None:
             filename = print_stats_adapter.get_filename()
             self.log_info_s(
-                f"initialize current mapping:{self.mapping} "
+                f"initialize current swap mapping:{self.mapping} "
                 f"filename to '{filename}'"
             )
             self.mapping["filename"] = filename
@@ -234,11 +237,7 @@ class MMSSwap:
 
         return True
 
-    def _standard_swap(self, slot_num_from, slot_num_to):
-        log_prefix = f"slot[{slot_num_from}] to slot[{slot_num_to}]" \
-                     f" standard swap"
-        self.log_info_s(f"{log_prefix} begin")
-
+    def _swap_park(self):
         if self.mms_purge.is_enabled():
             # Park to tray point
             self.mms_purge.move_to_tray()
@@ -246,10 +245,32 @@ class MMSSwap:
             # Park to cutter init point
             self.mms_cut.cut_init()
 
+    def _swap_no_blocking(self, skip_slot_num=None):
+        # Check Buffers are no blocking after before charge
+        # Filament Fracture may cause skip in eject
+        for mms_slot in self.mms.get_mms_slots():
+            if mms_slot.gate.is_triggered():
+                slot_num = mms_slot.get_num()
+
+                if skip_slot_num is not None \
+                    and slot_num == skip_slot_num:
+                    continue
+
+                msg = f"slot[{slot_num}] gate is triggering before charge"
+                raise EjectFailedError(msg, mms_slot)
+
+    def _standard_swap(self, slot_num_from, slot_num_to):
+        log_prefix = f"slot[{slot_num_from}] to slot[{slot_num_to}]" \
+                     f" standard swap"
+
+        self.log_info_s(f"{log_prefix} begin")
+        self._swap_park()
+
         # Phase I: Eject
         if not self.mms_eject.mms_eject():
             raise SwapFailedSignal(f"slot[{slot_num_from}] eject failed")
 
+        self._swap_no_blocking(skip_slot_num=slot_num_to)
         # Phase II: Charge
         if not self.mms_charge.mms_charge(slot_num_to):
             raise SwapFailedSignal(f"slot[{slot_num_to}] charge failed")
@@ -272,15 +293,11 @@ class MMSSwap:
 
     def _shortcut_swap(self, slot_num):
         log_prefix = f"slot[{slot_num}] shortcut swap"
+
         self.log_info_s(f"{log_prefix} begin")
+        self._swap_park()
 
-        if self.mms_purge.is_enabled():
-            # Park to tray point
-            self.mms_purge.move_to_tray()
-        else:
-            # Park to cutter init point
-            self.mms_cut.cut_init()
-
+        self._swap_no_blocking(skip_slot_num=slot_num)
         # Phase I: Charge
         if not self.mms_charge.mms_charge(slot_num):
             raise SwapFailedSignal(f"{log_prefix} charge failed")
@@ -301,12 +318,16 @@ class MMSSwap:
 
         self.log_info_s(f"{log_prefix} finish")
 
+    def _exec_custom_macro(self, macro, position):
+        if macro:
+            self.log_info(
+                f"MMS execute macro {position} SWAP:\n"
+                f"{macro}"
+            )
+            gcode_adapter.run_command(macro)
+
     def mms_swap(self, slot_num, gcmd):
-        # Exec before mms_swap
-        if self.custom_before:
-            self.log_info(f"MMS execute macro before SWAP:"
-                          f" {self.custom_before}")
-            gcode_adapter.run_command(self.custom_before)
+        self._exec_custom_macro(self.custom_before, "before")
 
         if not self.is_enabled():
             self.log_info_s("MMS SWAP is disabled, skip...")
@@ -327,6 +348,7 @@ class MMSSwap:
         self.log_info_s(
             f"{log_prefix} determine loading slots: {loading_slots}"
         )
+
         with self._swap_is_running():
             try:
                 # Deactivate both mms_buffers in the beginning
@@ -351,18 +373,17 @@ class MMSSwap:
                 self.log_warning(f"{log_prefix} failed: {e}")
                 self._handle_swap_failure(gcmd, e)
                 return False
+            except EjectFailedError as e:
+                self.log_warning(f"{log_prefix} failed: {e}")
+                self._handle_swap_failure(gcmd, e)
+                return False
             except Exception as e:
                 self.log_error(f"{log_prefix} error: {e}")
                 self._handle_swap_failure(gcmd, e)
                 return False
-            self.log_info_s(f"{log_prefix} finish")
 
-        # Exec mms_swap after
-        if self.custom_after:
-            self.log_info(
-                f"MMS execute macro after SWAP: {self.custom_after}")
-            gcode_adapter.run_command(self.custom_after)
-
+        self.log_info_s(f"{log_prefix} finish")
+        self._exec_custom_macro(self.custom_after, "after")
         return True
 
     def _handle_swap_failure(self, gcmd, msg):
@@ -421,6 +442,18 @@ class MMSSwap:
             return success
 
     # ---- Mapping ----
+    def _format_swap_mapping_info(self):
+        lst = list(self.mapping.keys())
+        lst.remove("filename")
+        lst.sort()
+
+        info = ""
+        for k in lst:
+            info += f"slot[{k}] -> slot[{self.mapping[k]}]\n"
+        info += f"filename: {self.mapping['filename']}"
+
+        return info
+
     def get_mapping_slot_num(self, slot_num):
         """Determine actual slot from mapping."""
         # Get current printing filename
@@ -428,12 +461,13 @@ class MMSSwap:
 
         if self.mapping.get("filename") == filename:
             target_slot_num = self.mapping.get(slot_num)
-
-            self.log_info_s(
-                "\n"
-                f"command slot[{slot_num}]\n"
-                f"target slot[{target_slot_num}]\n"
-                f"current swap mapping: {self.mapping}"
+            log_func = self.log_info_s \
+                if slot_num == target_slot_num \
+                else self.log_info
+            log_func(
+                f"slot[{slot_num}] swap mapping to slot[{target_slot_num}],\n"
+                f"current swap mapping:\n"
+                f"{self._format_swap_mapping_info()}"
             )
             return target_slot_num
 
@@ -454,22 +488,31 @@ class MMSSwap:
             )
 
     def cmd_MMS_SWAP_MAPPING(self, gcmd):
+        """
+        Update SLOTs mapping.
+        Change slot[swap_num] to slot[slot_num]
+        """
         swap_num = gcmd.get_int("SWAP_NUM", minval=0)
-        if not self.mms.slot_is_available(swap_num):
-            return
-
         slot_num = gcmd.get_int("SLOT", minval=0)
-        if not self.mms.slot_is_available(slot_num):
-            return
-
         filename = gcmd.get("FILENAME", default=None)
 
-        if swap_num is not None and slot_num is not None:
-            self.log_info(f"origin swap mapping: {self.mapping}")
-            self.mapping[swap_num] = slot_num
+        if not self.mms.slot_is_available(swap_num) \
+            or not self.mms.slot_is_available(slot_num):
+            return
+
+        if filename:
             self.mapping["filename"] = filename
 
-        self.log_info(f"current swap mapping: {self.mapping}")
+        # self.log_info(f"origin swap mapping: {self.mapping}")
+        org = self.mapping[swap_num]
+        self.mapping[swap_num] = slot_num
+        if org != slot_num:
+            self.log_info(
+                f"slot[{swap_num}] swap mapping update "
+                f"from '{org}' to '{slot_num}',\n"
+                f"current swap mapping:\n"
+                f"{self._format_swap_mapping_info()}"
+            )
 
 
 def load_config(config):

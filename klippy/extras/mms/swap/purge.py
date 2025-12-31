@@ -555,11 +555,16 @@ class MMSPurge:
 
         self.log_info_s(f"{log_prefix} finish")
 
-    def mms_purge(self):
-        if self.custom_before:
+    def _exec_custom_macro(self, macro, position):
+        if macro:
             self.log_info(
-                f"MMS execute macro before PURGE: {self.custom_before}")
-            gcode_adapter.run_command(self.custom_before)
+                f"MMS execute macro {position} PURGE:\n"
+                f"{macro}"
+            )
+            gcode_adapter.run_command(macro)
+
+    def mms_purge(self):
+        self._exec_custom_macro(self.custom_before, "before")
 
         slot_num = self.mms.get_current_slot()
         if not self._safety_checks(slot_num):
@@ -583,12 +588,7 @@ class MMSPurge:
                 return False
 
         self.log_info_s(f"{log_prefix} finish")
-
-        if self.custom_after:
-            self.log_info(
-                f"MMS execute macro after PURGE: {self.custom_after}")
-            gcode_adapter.run_command(self.custom_after)
-
+        self._exec_custom_macro(self.custom_after, "after")
         return True
 
     # ---- GCode ----

@@ -10,7 +10,7 @@ class ViViDKey:
     mms_steppers: str = "steppers"
     mms_buffers: str = "buffers"
 
-    heater: str = "heater_generic vivid_heater"
+    heater: str = "heater_generic ViViD_Dryer"
 
 
 class MMSController:
@@ -222,7 +222,7 @@ class MMSController:
         { 
             ...
             'extruder': {'temperature': -93.23}, 
-            'heater_generic vivid_heater': {'temperature': 25.96}, 
+            'heater_generic ViViD_Dryer': {'temperature': 25.96}, 
             'temperature_sensor vivid': {'temperature': 39.51}, 
             ...
         }

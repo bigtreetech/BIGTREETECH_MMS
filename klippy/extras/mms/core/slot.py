@@ -139,6 +139,7 @@ class MMSSlot:
 
         # MMS Buffer
         self.mms_buffer = self.mms.get_mms_buffer(self.num)
+        self.mms_buffer.register_slot_num(self.num)
 
         # MMS Stepper
         self.mms_selector = self.mms.get_selector(self.num)

@@ -248,7 +248,7 @@ class MMSEject:
 
         return result
 
-    def _find_eject_slots(self):
+    def find_eject_slots(self):
         """
         Sort loading slots based on priority and selection rules.
         Rules:
@@ -278,7 +278,7 @@ class MMSEject:
         return priority+remaining
 
     def _standard_eject(self, check_entry):
-        eject_slots = self._find_eject_slots()
+        eject_slots = self.find_eject_slots()
         if not eject_slots:
             self.log_info_s("standard eject skip, no loading slots")
             self.mms.log_status()
@@ -301,7 +301,7 @@ class MMSEject:
                     self._prepare_only(slot_num)
 
             # Check again and continue if any slots still loading
-            eject_slots = self._find_eject_slots()
+            eject_slots = self.find_eject_slots()
             if not eject_slots:
                 self.log_info_s("standard eject finish")
                 return True
@@ -359,7 +359,7 @@ class MMSEject:
                     mms_slot = self.mms.get_mms_slot(slot_num)
                     pin = "entry" if mms_slot.entry_is_triggered() else "outlet"
                     msg = f"slot[{slot_num}] eject exit toolhead failed" \
-                          f", {pin} is still triggering"
+                          f", '{pin}' is still triggering"
                     raise EjectFailedError(msg, mms_slot)
 
             # Finally unload to gate
@@ -372,13 +372,16 @@ class MMSEject:
 
         self.log_info_s("standard eject finish")
 
-    def mms_eject(self, check_entry=True):
-        if self.custom_before:
+    def _exec_custom_macro(self, macro, position):
+        if macro:
             self.log_info(
-                "MMS execute macro before EJECT:\n"
-                f"{self.custom_before}"
+                f"MMS execute macro {position} EJECT:\n"
+                f"{macro}"
             )
-            gcode_adapter.run_command(self.custom_before)
+            gcode_adapter.run_command(macro)
+
+    def mms_eject(self, check_entry=True):
+        self._exec_custom_macro(self.custom_before, "before")
 
         if self.is_running():
             self.log_warning("another eject is running, return")
@@ -393,13 +396,7 @@ class MMSEject:
             self.log_error(f"eject error: {e}")
             return False
 
-        if self.custom_after:
-            self.log_info(
-                "MMS execute macro after EJECT:\n"
-                f"{self.custom_after}"
-            )
-            gcode_adapter.run_command(self.custom_after)
-
+        self._exec_custom_macro(self.custom_after, "after")
         return True
 
     # ---- GCode ----
