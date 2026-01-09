@@ -460,7 +460,7 @@ copy_config_files() {
 cleaup_old_resource() {
     local printer_cfg="${KLIPPER_CONFIG_HOME}/printer.cfg"
     local old_mms_sed_1='\[include sample-bigtreetech-mms/mms.cfg\]'
-    local old_mms_sed_2='\[include bigtreetech-mms/mms.cfg\]'
+    local old_mms_sed_2='\[include sample-bigtreetech-mms/mms/mms.cfg\]'
     sed -i -e "\|${old_mms_sed_1}|d" "$printer_cfg"
     sed -i -e "\|${old_mms_sed_2}|d" "$printer_cfg"
 }
