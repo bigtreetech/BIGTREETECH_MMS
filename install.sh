@@ -65,13 +65,13 @@ g_log_en=1
 # The oldest version supported
 klipper_oldest_id="938300f3c3cc25448c499a3a8ca5b47b7a6d4fa8"
 # The latest version supported. usually is the latest version of the upstream
-klipper_latest_id="dd625933f7b9bd53363fe015c62aaa874021fa9a"
+klipper_latest_id="1fc9d81095a647401521d3e94bf34e8d4d3a363f"
 # Klipper supports AHT30 and no longer requires patching after this commit
 aht30_patch_id="1f43be0b8b55d90753578d06ac06356d1ab9a768"
 # The oldest version supported
 ks_oldest_id="b3115f9b9b329642d4dbf0ad225ab065ea3eda80"
 # The latest version supported. usually is the latest version of the upstream
-ks_latest_id="0747a7a150a592be2b555d86b1f1aef6632cfec9"
+ks_latest_id="426ffaac98ec979f8569957b6a2d123dc7c8f2eb"
 
 log_enable() {
     g_log_en=1
