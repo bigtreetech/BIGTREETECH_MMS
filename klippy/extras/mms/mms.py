@@ -35,7 +35,7 @@ from .motion.resume import MMSResume
 @dataclass(frozen=True)
 class MMSConfig:
     # Current version
-    version: str = "0.1.0372"
+    version: str = "0.1.0377"
     # Welcome for MMS initail
     welcome: str = "*"*10 + f" MMS Ver {version} Ready for Action! " + "*"*10
 
@@ -260,19 +260,19 @@ class MMS:
     def _handle_klippy_shutdown(self):
         if self.mms_logger:
             self._last_breath()
-            self.log_warning("!!! Klippy Shutdown !!!")
+            self.log_info_s("!!! Klippy Shutdown !!!")
             self.mms_logger.teardown()
 
     def _handle_klippy_disconnect(self):
         if self.mms_logger:
             self._last_breath()
-            self.log_warning("!!! Klippy Disconnect !!!")
+            self.log_info_s("!!! Klippy Disconnect !!!")
             self.mms_logger.teardown()
 
     def _handle_klippy_firmware_restart(self):
         if self.mms_logger:
             self._last_breath()
-            self.log_warning("!!! Klippy Firmware Restart !!!")
+            self.log_info_s("!!! Klippy Firmware Restart !!!")
             self.mms_logger.teardown()
 
     # -- Extend module init --
@@ -331,6 +331,11 @@ class MMS:
             ("MMS_SAMPLE", self.cmd_MMS_SAMPLE),
             ("MMS_STATUS_STEPPER", self.cmd_MMS_STATUS_STEPPER),
             ("MMS_SAMPLE_STEPPER", self.cmd_MMS_SAMPLE_STEPPER),
+
+            # RFID Support
+            ("MMS_RFID_READ", self.cmd_MMS_RFID_READ),
+            ("MMS_RFID_WRITE", self.cmd_MMS_RFID_WRITE),
+            ("MMS_RFID_TRUNCATE", self.cmd_MMS_RFID_TRUNCATE),
 
             # Alias
             ("MMS00", self.cmd_MMS_STATUS),
@@ -952,6 +957,32 @@ class MMS:
         except Exception as e:
             self.log_error_s(f"MMS_SAMPLE_STEPPER error:{e}")
         self.log_info("MMS sample stepper begin")
+
+    def cmd_MMS_RFID_READ(self, gcmd):
+        slot_num = gcmd.get_int("SLOT", minval=0)
+        if not self.slot_is_available(slot_num):
+            return
+        switch = gcmd.get_int("SWITCH", 0)
+
+        mms_slot = self.get_mms_slot(slot_num)
+        if switch == 1:
+            mms_slot.slot_rfid.rfid_read_begin()
+        else:
+            mms_slot.slot_rfid.rfid_read_end()
+
+    def cmd_MMS_RFID_WRITE(self, gcmd):
+        slot_num = gcmd.get_int("SLOT", minval=0)
+        if not self.slot_is_available(slot_num):
+            return
+        mms_slot = self.get_mms_slot(slot_num)
+        mms_slot.slot_rfid.rfid_write()
+
+    def cmd_MMS_RFID_TRUNCATE(self, gcmd):
+        slot_num = gcmd.get_int("SLOT", minval=0)
+        if not self.slot_is_available(slot_num):
+            return
+        mms_slot = self.get_mms_slot(slot_num)
+        mms_slot.slot_rfid.rfid_truncate()
 
     def cmd_MMS_TEST(self, gcmd):
         return

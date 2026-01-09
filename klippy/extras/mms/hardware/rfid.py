@@ -97,9 +97,10 @@ class RFIDManager:
 
     def _initialize_loggers(self):
         mms_logger = printer_adapter.get_mms_logger()
-        self.log_info = mms_logger.create_log_info(console_output=False)
+        self.log_info = mms_logger.create_log_info(console_output=True)
         self.log_warning = mms_logger.create_log_warning()
         self.log_error = mms_logger.create_log_error()
+        self.log_info_s = mms_logger.create_log_info(console_output=False)
 
     def new_rfid_model(self):
         return RFIDModel()
@@ -134,7 +135,7 @@ class RFIDManager:
 
             # Block data to string
             hash_read = self.hash_assistant.block_to_string(blocks_lst)
-            self.log_info(f"hash_read: {hash_read}")
+            self.log_info_s(f"hash_read: {hash_read}")
 
     def rfid_read(self):
         """
@@ -148,11 +149,11 @@ class RFIDManager:
         with self.use_antenna():
             uid = self.handler.prepare_loop()
             if not uid:
-                self.log_info("No Tag, return")
+                self.log_info_s("No Tag, return")
                 return
 
             uid_s = self.handler.format_block_data(uid)
-            # self.log_info(f"Tag uid={uid_s}")
+            # self.log_info_s(f"Tag uid={uid_s}")
 
             # Read the Sector 15 to get hash data, prepare have done before
             sector_15_lst = self.handler.read_sector(uid=uid, sector_num=15)
@@ -163,7 +164,7 @@ class RFIDManager:
 
             # Block data to string
             hash_read = self.hash_assistant.block_to_string(blocks_lst)
-            self.log_info(f"hash_read: {hash_read}")
+            self.log_info_s(f"hash_read: {hash_read}")
 
             # Validation schema
             if not hash_read:
@@ -190,7 +191,7 @@ class RFIDManager:
             need_reload = False
 
             if blocks_cached:
-                self.log_info("cache load")
+                self.log_info_s("cache load")
 
                 # If cached blocks exists, find the cached block 60/61 first
                 blocks_cached.sort(key=lambda tup: tup[0])
@@ -198,36 +199,38 @@ class RFIDManager:
                     filter(lambda tup: tup[0] in [60, 61], blocks_cached))
 
                 hash_cached = self.hash_assistant.block_to_string(blocks_hash)
-                self.log_info(f"hash_cached: {hash_cached}")
+                self.log_info_s(f"hash_cached: {hash_cached}")
 
                 if hash_read == hash_cached:
-                    # Read and cached hash data are the same, return cached data
-                    self.log_info("cached found and hash match, return"
-                                  " blocks cached")
+                    # Read and cached hash data are the same,
+                    # return cached data
+                    self.log_info_s(
+                        "cached found and hash match, return blocks cached"
+                    )
                     # for i,data in blocks_cached:
-                    #     self.log_info(f"Block {i}: {data}")
+                    #     self.log_info_s(f"Block {i}: {data}")
 
                     cache_key = self.cache.gen_key(uid_s, prefix="rfid_dict")
                     rfid_model_json = self.cache.get(cache_key)
-                    # self.log_info(rfid_model_json)
+                    # self.log_info_s(rfid_model_json)
 
                     return rfid_model_json
 
                 else:
                     # Read and cached hash data are different
                     # reload new block data
-                    self.log_info("cache not the same, reload")
+                    self.log_info_s("cache not the same, reload")
                     need_reload = True
             else:
                 # No cached found, reload new block data
-                self.log_info("init load...")
+                self.log_info_s("init load...")
                 need_reload = True
 
             if need_reload:
                 # Reload begin, prepare before read
                 uid_new = self.handler.prepare_loop()
                 if not uid_new:
-                    self.log_info("no Tag, reload failed, exit")
+                    self.log_info_s("no Tag, reload failed, exit")
                     return
 
                 uid_new_s = self.handler.format_block_data(uid_new)
@@ -235,9 +238,9 @@ class RFIDManager:
                 # If new UID is not the same UID of begin,
                 # a new Tag collision problem may happen, exit
                 if uid_new_s != uid_s:
-                    self.log_info(f"UID begin: {uid_s}")
-                    self.log_info(f"UID current: {uid_new_s}")
-                    self.log_info(f"found different UID, reload failed, exit")
+                    self.log_info_s(f"UID begin: {uid_s}")
+                    self.log_info_s(f"UID current: {uid_new_s}")
+                    self.log_info_s(f"found different UID, reload failed, exit")
                     return
 
                 # Read full blocks data
@@ -252,7 +255,7 @@ class RFIDManager:
                         self.hash_assistant.block_to_string(blocks_read[:60]))
                     hash_calculate = (
                         self.hash_assistant.hash_as_string(data_string))
-                    self.log_info(f"hash_calculate: {hash_calculate}")
+                    self.log_info_s(f"hash_calculate: {hash_calculate}")
 
                     # Validation check
                     if hash_read != hash_calculate:
@@ -263,15 +266,15 @@ class RFIDManager:
                     # Cached the full blocks data
                     cache_key = self.cache.gen_key(uid_s)
                     self.cache.add(cache_key, blocks_read)
-                    self.log_info(f"RFID data success cached with UID: {uid_s}")
+                    self.log_info_s(f"RFID data success cached with UID: {uid_s}")
                     # for i,data in blocks_read:
-                    #     self.log_info(f"Block {i}: {data}")
+                    #     self.log_info_s(f"Block {i}: {data}")
 
                     blocks_dct = {
                         str(tup[0]):tup[1].replace(" ", "")
                         for tup in blocks_read
                     }
-                    # self.log_info(f"blocks_dct: {blocks_dct}")
+                    # self.log_info_s(f"blocks_dct: {blocks_dct}")
 
                     rfid_model = self.new_rfid_model()
                     rfid_model.from_blocks(blocks_dct)
@@ -279,13 +282,14 @@ class RFIDManager:
 
                     cache_key = self.cache.gen_key(uid_s, prefix="rfid_dict")
                     self.cache.add(cache_key, rfid_model_json)
-                    # self.log_info(rfid_model_json)
+                    # self.log_info_s(rfid_model_json)
 
                     return rfid_model_json
 
                 else:
-                    self.log_info("failed to Read all blocks data while"
-                                  " reloading, exit")
+                    self.log_info_s(
+                        "failed to Read all blocks data while reloading, exit"
+                    )
 
             return
 
@@ -294,10 +298,10 @@ class RFIDManager:
             # Write single block
             uid = self.handler.prepare_loop()
             if not uid:
-                return
+                return False
 
             uid_s = self.handler.format_block_data(uid)
-            self.log_info(f"Card UID: {uid_s}")
+            self.log_info_s(f"Card UID: {uid_s}")
 
             # block_num = 16
             # byte_array = [0x00,] * 16
@@ -307,7 +311,10 @@ class RFIDManager:
             if uid:
                 blocks_read = self.handler.read_single_block(uid, block_num)
                 if blocks_read:
-                    self.log_info(f"Block {block_num}: {blocks_read}")
+                    self.log_info_s(f"Block {block_num}: {blocks_read}")
+                    return True
+
+            return False
 
     def rfid_write_hash(self):
         with self.use_antenna():
@@ -317,7 +324,7 @@ class RFIDManager:
                 return
 
             uid_s = self.handler.format_block_data(uid)
-            self.log_info(f"Card UID: {uid_s}")
+            self.log_info_s(f"Card UID: {uid_s}")
 
             sha256_data_lst = self.handler.cal_blocks_sha256(uid)
 
@@ -379,19 +386,32 @@ class MMSRfid:
 
     def _initialize_loggers(self):
         mms_logger = printer_adapter.get_mms_logger()
-        self.log_info = mms_logger.create_log_info(console_output=False)
+        self.log_info = mms_logger.create_log_info(console_output=True)
         self.log_warning = mms_logger.create_log_warning()
         self.log_error = mms_logger.create_log_error()
+        self.log_info_s = mms_logger.create_log_info(console_output=True)
 
     def _initialize_gcode(self):
-        gcode_adapter.register_mux(cmd = "MMS_RFID_DETECT",
-            key = "NAME", value = self.name, func = self.cmd_RFID_detect)
-        gcode_adapter.register_mux(cmd = "MMS_RFID_READ",
-            key = "NAME", value = self.name, func = self.cmd_RFID_read)
-        gcode_adapter.register_mux(cmd = "MMS_RFID_WRITE",
-            key = "NAME", value = self.name, func = self.cmd_RFID_write)
-        gcode_adapter.register_mux(cmd = "MMS_RFID_READ_TAGS",
-            key = "NAME", value = self.name, func = self.cmd_RFID_read_tags)
+        gcode_adapter.register_mux(
+            cmd = "MMS_RFID_DETECT_DEV",
+            key = "NAME", value = self.name,
+            func = self.cmd_MMS_RFID_DETECT
+        )
+        gcode_adapter.register_mux(
+            cmd = "MMS_RFID_READ_DEV",
+            key = "NAME", value = self.name,
+            func = self.cmd_MMS_RFID_READ
+        )
+        gcode_adapter.register_mux(
+            cmd = "MMS_RFID_WRITE_DEV",
+            key = "NAME", value = self.name,
+            func = self.cmd_MMS_RFID_WRITE
+        )
+        # gcode_adapter.register_mux(
+        #     cmd = "MMS_RFID_READ_TAGS",
+        #     key = "NAME", value = self.name,
+        #     func = self.cmd_MMS_RFID_READ_TAGS
+        # )
 
     def _initialize_task(self):
         self.periodic_task = PeriodicTask()
@@ -401,20 +421,22 @@ class MMSRfid:
     def _initialize_manager(self):
         self.rfid_manager = RFIDManager(self.spi)
 
-    def write(self):
-        # Most likely return "/home/.../printer_data/config/printer.cfg"
+    # ---- Tag write ----
+    def _load_rfid_file(self):
+         # Most likely return "/home/.../printer_data/config/printer.cfg"
         cfg_path = printer_adapter.get_klippy_configfile()
         # base_dir should be "/home/.../printer_data/config/"
         base_dir = os.path.dirname(cfg_path)
         # filename should be "rfid_write.json"
         filename = os.path.basename(self.rfid_data_file)
 
+        full_path = None
         json_data = None
+
         for root, _, files in os.walk(base_dir):
             if filename in files:
                 full_path = os.path.join(root, filename)
                 if self.rfid_data_file in full_path:
-                    self.log_info(f"write data from file:{full_path}")
                     try:
                         with open(full_path, 'r', encoding='utf-8') as f:
                             content = f.read()
@@ -423,6 +445,8 @@ class MMSRfid:
                         self.log_error(f"JSON decode error ({full_path}): {e}")
                     except Exception as e:
                         self.log_error(f"open file error {full_path}: {e}")
+
+        return full_path, json_data
 
         # full_path = os.path.join(base_dir, self.rfid_data_file)
         # try:
@@ -434,32 +458,53 @@ class MMSRfid:
         # except Exception as e:
         #     self.log_error(f"open file error {full_path}: {e}")
 
-        if json_data:
-            rfid_model = self.rfid_manager.new_rfid_model()
-            rfid_model.from_dict(json_data)
-            # Log data
-            data_encode_json = rfid_model.to_json()
-            self.log_info(f"data_encode_json: {data_encode_json}")
+    def write(self):
+        full_path, json_data = self._load_rfid_file()
+        if not json_data:
+            self.log_warning(
+                f"RFID[{self.name}] write load rfid file failed"
+            )
+            return False
 
-            # Write to tag
-            prepared_blocks = rfid_model.prepare_blocks_writing()
+        # Setup model
+        rfid_model = self.rfid_manager.new_rfid_model()
+        rfid_model.from_dict(json_data)
 
-            for block_num, byte_array in prepared_blocks.items():
-                self.rfid_manager.rfid_write_block(block_num, byte_array)
+        # Log data
+        data_encode_json = rfid_model.to_json()
+        self.log_info(
+            f"RFID[{self.name}] write\n"
+            "load data from file:\n"
+            f"{full_path}\n"
+            "data encode json:\n"
+            f"{data_encode_json}"
+        )
 
-            self.rfid_manager.rfid_write_hash()
+        # Write to tag
+        prepared_blocks = rfid_model.prepare_blocks_writing()
+        for block_num, byte_array in prepared_blocks.items():
+            success = self.rfid_manager.rfid_write_block(block_num, byte_array)
+            if not success:
+                return False
 
+        self.rfid_manager.rfid_write_hash()
+        return True
+
+    # ---- Tag detect ----
     def detect_begin(self, callback):
         func = self.rfid_manager.get_uid
 
         try:
-            is_ready = self.periodic_task.schedule(func=func, callback=callback)
+            is_ready = self.periodic_task.schedule(
+                func=func, callback=callback
+            )
             if is_ready:
                 ret = self.periodic_task.start()
                 if ret:
                     self.is_detecting = True
-                    self.log_info(f"RFID[{self.name}] detect initiated"
-                                  f" in the backend")
+                    self.log_info(
+                        f"RFID[{self.name}] detect initiated in the backend"
+                    )
                 else:
                     self.log_error(f"RFID[{self.name}] detect begin failed")
             else:
@@ -472,26 +517,38 @@ class MMSRfid:
             ret = self.periodic_task.stop()
             if ret:
                 self.is_detecting = False
-                self.log_info(f"RFID[{self.name}] detect terminated"
-                              f" in the backend")
+                self.log_info(
+                    f"RFID[{self.name}] detect terminated in the backend"
+                )
             else:
                 self.log_warning(f"RFID[{self.name}] detect is not running")
-
             return ret
         except Exception as e:
             self.log_error(f"RFID[{self.name}] detect_end error:{e}")
 
+    def _handle_detected(self, data):
+        if data and self.detect_end():
+            uid = self.rfid_manager.to_string(block_data=data)
+            self.log_info(
+                f"RFID[{self.name}] detect Tag uid:\n"
+                f"{uid}"
+            )
+
+    # ---- Tag read ----
     def read_begin(self, callback):
         func = self.rfid_manager.rfid_read
 
         try:
-            is_ready = self.periodic_task.schedule(func=func, callback=callback)
+            is_ready = self.periodic_task.schedule(
+                func=func, callback=callback
+            )
             if is_ready:
                 ret = self.periodic_task.start()
                 if ret:
                     self.is_reading = True
-                    self.log_info(f"RFID[{self.name}] read initiated"
-                                  f" in the backend")
+                    self.log_info(
+                        f"RFID[{self.name}] read initiated in the backend"
+                    )
                 else:
                     self.log_error(f"RFID[{self.name}] read begin failed")
             else:
@@ -505,36 +562,36 @@ class MMSRfid:
             ret = self.periodic_task.stop()
             if ret:
                 self.is_reading = False
-                self.log_info(f"RFID[{self.name}] read terminated"
-                              f" in the backend")
+                self.log_info(
+                    f"RFID[{self.name}] read terminated in the backend"
+                )
             else:
                 self.log_warning(f"RFID[{self.name}] read is not running")
-
             return ret
         except Exception as e:
             self.log_error(f"RFID[{self.name}] read_end error:{e}")
 
-    def _handle_detected(self, data):
-        if data:
-            if self.detect_end():
-                uid = self.rfid_manager.to_string(block_data=data)
-                self.log_info(f"Tag uid={uid}")
-
     def _handle_read(self, data):
-        if data:
-            if self.read_end():
-                self.log_info(f"RFID[{self.name}] read data={data}")
+        if data and self.read_end():
+            self.log_info(
+                f"RFID[{self.name}] read data:\n"
+                f"{data}"
+            )
 
+    # ---- Dev ----
     def get_tags_begin(self, callback):
         func = self.rfid_manager.get_tags
 
         try:
-            is_ready = self.periodic_task.schedule(func=func, callback=callback)
+            is_ready = self.periodic_task.schedule(
+                func=func, callback=callback
+            )
             if is_ready:
                 ret = self.periodic_task.start()
                 if ret:
-                    self.log_info(f"RFID[{self.name}] get tags"
-                                  f" initiated in the backend")
+                    self.log_info(
+                        f"RFID[{self.name}] get tags initiated in the backend"
+                    )
                 else:
                     self.log_error(f"RFID[{self.name}] get tags begin failed")
             else:
@@ -547,36 +604,49 @@ class MMSRfid:
         try:
             ret = self.periodic_task.stop()
             if ret:
-                self.log_info(f"RFID[{self.name}] get tags"
-                              f" terminated in the backend")
+                self.log_info(
+                    f"RFID[{self.name}] get tags terminated in the backend"
+                )
             else:
                 self.log_warning(f"RFID[{self.name}] get tags is not running")
             return ret
         except Exception as e:
             self.log_error(f"RFID[{self.name}] get_tags_end error:{e}")
 
-    # CMD func for G-Code
-    def cmd_RFID_detect(self, gcmd):
-        flag = gcmd.get_int("SWITCH", 0)
-        if flag == 1:
+    # ---- GCode commands ----
+    def cmd_MMS_RFID_DETECT(self, gcmd):
+        """
+        Usage:
+            MMS_RFID_DETECT_DEV NAME=mfrc522_0 SWITCH=0/1
+        """
+        switch = gcmd.get_int("SWITCH", 0)
+        if switch == 1:
             self.detect_begin(callback=self._handle_detected)
         else:
             self.detect_end()
 
-    def cmd_RFID_read(self, gcmd):
-        flag = gcmd.get_int("SWITCH", 0)
-        if flag == 1:
+    def cmd_MMS_RFID_READ(self, gcmd):
+        """
+        Usage:
+            MMS_RFID_READ_DEV NAME=mfrc522_0 SWITCH=0/1
+        """
+        switch = gcmd.get_int("SWITCH", 0)
+        if switch == 1:
             self.read_begin(callback=self._handle_read)
         else:
             self.read_end()
 
-    def cmd_RFID_write(self, gcmd):
+    def cmd_MMS_RFID_WRITE(self, gcmd):
+        """
+        Usage:
+            MMS_RFID_WRITE_DEV NAME=mfrc522_0
+        """
         self.log_info(f"RFID[{self.name}] write start")
         self.write()
         self.log_info(f"RFID[{self.name}] write finish")
 
-    def cmd_RFID_read_tags(self, gcmd):
-        self.rfid_manager.get_tags()
+    # def cmd_MMS_RFID_READ_TAGS(self, gcmd):
+    #     self.rfid_manager.get_tags()
 
 
 def load_config(config):

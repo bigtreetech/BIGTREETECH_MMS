@@ -131,12 +131,11 @@ class MMSDelivery:
             # Stop commands
             ("MMS_STOP", self.cmd_MMS_STOP),
             # Diagnostic commands
-            ("MMS_SLOTS_WALK", self.cmd_MMS_SLOTS_WALK),
             ("MMS_SLOTS_CHECK", self.cmd_MMS_SLOTS_CHECK),
             ("MMS_SLOTS_LOOP", self.cmd_MMS_SLOTS_LOOP),
             # Command aliases
             ("MMS999", self.cmd_MMS_STOP),
-            ("MMS9", self.cmd_MMS_SLOTS_WALK),
+            ("MMS9", self.cmd_MMS_SLOTS_CHECK),
             ("MMS8", self.cmd_MMS_SLOTS_LOOP),
 
             # For KlipperScreen
@@ -146,6 +145,7 @@ class MMSDelivery:
             ("MMS_PREPARE_U", self.cmd_MMS_PREPARE_U),
             # Test
             ("MMS_D_TEST", self.cmd_MMS_D_TEST),
+            ("MMS996", self.cmd_MMS_D_TEST),
         ]
         gcode_adapter.bulk_register(commands)
 
@@ -845,47 +845,19 @@ class MMSDelivery:
 
         return True
 
-    def mms_slots_walk(self):
-        self.log_info("slots walk begin")
-        # Walk through all SLOTs
-        for slot_num in self.mms.get_slot_nums():
-            if not self._can_walk():
-                return False
-
-            try:
-                self.unload_loading_slots(skip_slot=slot_num)
-                self.pause(1)
-
-                mms_slot = self.mms.get_mms_slot(slot_num)
-                if mms_slot.entry_is_set():
-                    self.load_to_entry(slot_num)
-                else:
-                    self.load_to_outlet(slot_num)
-
-            except DeliveryTerminateSignal:
-                self.log_info("slots walk terminated")
-                return False
-            except DeliveryReadyError:
-                pass
-            except Exception as e:
-                self.log_error(f"slots walk error:{e}")
-                return False
-
-        # Finally unload
-        if self._can_walk():
-            try:
-                self.unload_loading_slots()
-            except DeliveryTerminateSignal:
-                self.log_info("slots walk terminated")
-                return False
-            except DeliveryReadyError:
-                pass
-            except Exception as e:
-                self.log_error(f"slots walk error:{e}")
-                return False
-
-        self.log_info("slots walk finish")
-        return True
+    def verify_pins(self, mms_slot, loaded):
+        trigger = loaded
+        if not mms_slot.inlet.is_triggered():
+            raise Exception("Intlet")
+        if (mms_slot.gate.is_triggered() != trigger):
+            raise Exception("Gate")
+        if (mms_slot.buffer_runout.is_triggered() == trigger):
+            raise Exception("Buffer_runout: PA4")
+        if (mms_slot.outlet.is_triggered() != trigger):
+            raise Exception("Outlet: PA5")
+        if mms_slot.entry_is_set() \
+            and (mms_slot.entry_is_triggered() != trigger):
+            raise Exception("Entry")
 
     def mms_slots_check(self):
         self.log_info("slots check begin")
@@ -895,16 +867,19 @@ class MMSDelivery:
                 return False
 
             try:
-                self.unload_loading_slots(skip_slot=slot_num)
-                self.pause(1)
-
                 mms_slot = self.mms.get_mms_slot(slot_num)
+
+                self.unload_loading_slots()
+                self.pause(1)
+                self.log_info("unload: " + mms_slot.format_pins_status())
+                self.verify_pins(mms_slot, False)
+
                 self.load_to_outlet(slot_num)
                 if mms_slot.entry_is_set() \
                     and not mms_slot.entry_is_triggered():
                     self.load_to_entry(slot_num)
-
-                self.log_info(mms_slot.format_pins_status())
+                self.log_info("load: " + mms_slot.format_pins_status())
+                self.verify_pins(mms_slot, True)
 
             except DeliveryTerminateSignal:
                 self.log_info("slots check terminated")
@@ -919,6 +894,9 @@ class MMSDelivery:
         if self._can_walk():
             try:
                 self.unload_loading_slots()
+                self.log_info(
+                    "Finally unload: " + mms_slot.format_pins_status())
+                self.verify_pins(mms_slot, False)
             except DeliveryTerminateSignal:
                 self.log_info("slots check terminated")
                 return False
@@ -937,7 +915,7 @@ class MMSDelivery:
         for i in range(total):
             msg = f"############### loop: {i+1}/{total} ###############"
             self.log_info(msg)
-            success = self.mms_slots_walk()
+            success = self.mms_slots_check()
             if not success or not self._can_walk():
                 break
         self.log_info("slots loop finish")
@@ -1122,17 +1100,6 @@ class MMSDelivery:
                 {"slot_num":slot_num}
             )
 
-    def cmd_MMS_SLOTS_WALK(self, gcmd=None):
-        if not self.mms.cmd_can_exec():
-            self.log_warning("MMS_SLOTS_WALK can not execute now")
-            return
-
-        should_wait = gcmd.get_int("WAIT", default=0)
-        if bool(should_wait):
-            self.mms_slots_walk()
-        else:
-            self.deliver_async_task(self.mms_slots_walk)
-
     def cmd_MMS_SLOTS_CHECK(self, gcmd=None):
         if not self.mms.cmd_can_exec():
             self.log_warning("MMS_SLOTS_CHECK can not execute now")
@@ -1169,25 +1136,31 @@ class MMSDelivery:
         self.mms_stop(slot_num)
 
     def cmd_MMS_D_TEST(self, gcmd):
-        return
+        loop_times = 200
 
-        # slot_num = 0
-        # self.select_slot(slot_num)
+        fracture_enabled = self.mms_filament_fracture.is_enabled()
+        self.mms_filament_fracture.activate()
 
-        # pin_type = self.pin_type.selector
-        # mms_slot = self.mms.get_mms_slot(slot_num)
-        # mms_selector = mms_slot.get_mms_selector()
-        # wait = mms_slot.get_wait_func(pin_type)
-        # with wait():
-        #     return mms_selector.manual_home(
-        #         distance = self.d_config.stepper_move_distance,
-        #         speed = self.d_config.speed_selector,
-        #         accel = self.d_config.accel_selector,
-        #         forward = True,
-        #         trigger = False,
-        #         endstop_pair_lst = mms_slot.format_endstop_pair(pin_type),
-        #     )
+        for i in range(loop_times):
+            for mms_slot in self.mms.get_mms_slots():
+                slot_num = mms_slot.get_num()
 
+                if mms_slot.inlet.is_released():
+                    continue
+
+                try:
+                    self.load_to_outlet(slot_num)
+                except:
+                    pass
+                self.pause(3)
+                self.wait_mms_selector_and_drive(slot_num, timeout=60)
+                mms_slot.slot_led.deactivate_blinking()
+                if mms_slot.outlet.is_triggered():
+                    self.mms_prepare(slot_num)
+
+        if not fracture_enabled:
+            self.mms_filament_fracture.deactivate()
+        
     # For KlipperScreen
     def cmd_MMS_SELECT_U(self, gcmd):
         slot_num = gcmd.get_int("SLOT", minval=0)

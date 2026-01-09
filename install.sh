@@ -1,6 +1,6 @@
 #!/bin/bash
 
-KLIPPY_VERSION=0.1.0372 # Important: Keep synced with 'klippy/extras/mms/mms.py'
+KLIPPY_VERSION=0.1.0377 # Important: Keep synced with 'klippy/extras/mms/mms.py'
 KLIPPER_SCREEN_VERSION=0.2.0010 # Important: Keep synced with 'KlipperScreen/vivid/installer.py'
 
 SCRIPTNAME="$0"
@@ -445,9 +445,9 @@ uninstall_klippy() {
 }
 
 copy_config_files() {
-    local dst_dir="${KLIPPER_CONFIG_HOME}/sample-bigtreetech-mms"
+    local dst_dir="${KLIPPER_CONFIG_HOME}/bigtreetech-mms"
     local next_dst_dir="$(nextfilename "${dst_dir}")"
-    local src_dir="${SHELL_DIR}/config/sample-bigtreetech-mms"
+    local src_dir="${SHELL_DIR}/config/bigtreetech-mms"
 
     if [ -d "${dst_dir}" ]; then
         mv "${dst_dir}" "${next_dst_dir}"
@@ -459,14 +459,16 @@ copy_config_files() {
 
 cleaup_old_resource() {
     local printer_cfg="${KLIPPER_CONFIG_HOME}/printer.cfg"
-    local old_mms_sed='\[include sample-bigtreetech-mms/mms.cfg\]'
-    sed -i -e "\|${old_mms_sed}|d" "$printer_cfg"
+    local old_mms_sed_1='\[include sample-bigtreetech-mms/mms.cfg\]'
+    local old_mms_sed_2='\[include bigtreetech-mms/mms.cfg\]'
+    sed -i -e "\|${old_mms_sed_1}|d" "$printer_cfg"
+    sed -i -e "\|${old_mms_sed_2}|d" "$printer_cfg"
 }
 
 include_exclude_config_files() {
     local include=$1
     local printer_cfg="${KLIPPER_CONFIG_HOME}/printer.cfg"
-    local mms_sed='\[include sample-bigtreetech-mms/mms/mms.cfg\]'
+    local mms_sed='\[include bigtreetech-mms/mms/mms.cfg\]'
     if [ -f "${printer_cfg}" ]; then
         if [ "${include}" -eq 0 ]; then
             sed -i -e "\|${mms_sed}|d" "$printer_cfg"
@@ -605,7 +607,7 @@ uninstall_KlipperScreen() {
 }
 
 set_user_config() {
-    local mms_dir="${KLIPPER_CONFIG_HOME}/sample-bigtreetech-mms"
+    local mms_dir="${KLIPPER_CONFIG_HOME}/bigtreetech-mms"
     local mms_path="${mms_dir}/mms/mms.cfg"
     local base_dir="${mms_dir}/base"
     local cut_path="${base_dir}/mms-cut.cfg"

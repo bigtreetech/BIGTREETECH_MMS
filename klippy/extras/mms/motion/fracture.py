@@ -18,6 +18,7 @@ from ..adapters import (
 class MMSFilamentFractureConfig:
     unload_distance: float = 100 # mm
     extrude_distance_max: float = 3000 # mm
+    log_flag: str = "==X=="
 
 
 class MMSFilamentFracture:
@@ -27,6 +28,7 @@ class MMSFilamentFracture:
         ff_config = MMSFilamentFractureConfig()
         self.unload_distance = ff_config.unload_distance
         self.extrude_distance_max = ff_config.extrude_distance_max
+        self.log_flag = ff_config.log_flag
 
         self._enable = True
 
@@ -93,15 +95,19 @@ class MMSFilamentFracture:
         mms_slot = self.mms.get_mms_slot(slot_num)
         with mms_slot.inlet.monitor_release(
                 condition=self.is_enabled,
-                callback=self.handle_while_feeding,
+                callback=self._handle_while_feeding,
                 params={"slot_num":slot_num}
             ):
             yield
 
+    def force_handle_while_feeding(self, slot_num):
+        if self.is_enabled():
+            self._handle_while_feeding(slot_num)
+
     # ---- Handlers ----
     def _handle_while_homing(self, slot_num):
         log_prefix = f"slot[{slot_num}] filament fracture while homing"
-        self.log_warning(f"{log_prefix} ==X==")
+        self.log_warning(f"{log_prefix} {self.log_flag}")
 
         # Immediately halt MMS operations
         # Note:
@@ -153,9 +159,9 @@ class MMSFilamentFracture:
             mms_slot.slot_led.activate_blinking()
         self.log_info_s(f"{log_prefix} done")
 
-    def handle_while_feeding(self, slot_num):
+    def _handle_while_feeding(self, slot_num):
         log_prefix = f"slot[{slot_num}] filament fracture while feeding"
-        self.log_warning(f"{log_prefix} ==X==")
+        self.log_warning(f"{log_prefix} {self.log_flag}")
 
         mms_slot = self.mms.get_mms_slot(slot_num)
         mms_buffer = mms_slot.get_mms_buffer()
@@ -185,46 +191,61 @@ class MMSFilamentFracture:
             self.log_error(f"{log_prefix} failed")
             return
 
-        can_play_led_effect = True
+        # Skip If mms_purge is disabled
+        if not self.mms_purge.is_enabled():
+            mms_slot.slot_led.activate_blinking()
+            self.log_info_s(f"{log_prefix} done")
+            return
 
-        # Check if entry sensor is triggered in the specified slot
+        try:
+            purge_success = self._purge_until_entry_release(slot_num)
+            if purge_success:
+                # Try to resume after purge success
+                resume_success = self._resume_slot_substitute(slot_num)
+                if resume_success:
+                    self.log_info_s(f"{log_prefix} done")
+                    return 
+        except Exception as e:
+            self.log_error(f"{log_prefix} error: {e}")
+
+        # Finally
+        mms_slot.slot_led.activate_blinking()
+        self.log_info_s(f"{log_prefix} done")
+
+    def _purge_until_entry_release(self, slot_num):
+        mms_slot = self.mms.get_mms_slot(slot_num)
+        success = True
+
+        # Check if entry sensor is set and triggered
         if mms_slot.entry_is_triggered():
-            try:
-                # Make sure is not selecting
-                self.mms_delivery.select_another_slot(slot_num)
-                # If mms_purge is disabled?
-                distance = self.mms_purge.get_purge_distance()
-                speed = self.mms_purge.get_purge_speed()
+            speed = self.mms_purge.get_purge_speed()
+            distance = self.mms_purge.get_purge_distance()
+            distance_extruded = 0
 
-                distance_extruded = 0
-                can_resume = True
-
-                # Extrude until entry is released
-                while mms_slot.entry_is_triggered():
-                    self.mms_purge.move_to_tray()
-                    extruder_adapter.extrude(distance, speed)
-                    # If brush is disabled?
-                    # if not self.mms_brush.mms_brush():
+            # Make sure is not selecting
+            self.mms_delivery.select_another_slot(slot_num)
+            # Extrude until entry is released
+            while mms_slot.entry_is_triggered():
+                # Move to tray
+                self.mms_purge.move_to_tray()
+                # Extrude
+                extruder_adapter.extrude(distance, speed)
+                # Brush to clean nozzle
+                if self.mms_brush.is_enabled():
                     self.mms_brush.mms_brush()
 
-                    distance_extruded += distance
-                    if distance_extruded >= self.extrude_distance_max:
-                        self.log_warning(
-                            f"{log_prefix} warning: total extrude distance "
-                            f"reach limit {self.extrude_distance_max}mm, break"
-                        )
-                        can_resume = False
-                        break
+                # Distance check
+                distance_extruded += distance
+                if distance_extruded >= self.extrude_distance_max:
+                    self.log_warning(
+                        f"{log_prefix} warning: total extrude distance "
+                        f"reach limit {self.extrude_distance_max}mm, "
+                        "break"
+                    )
+                    success = False
+                    break
 
-                if can_resume and self._resume_slot_substitute(slot_num):
-                    can_play_led_effect = False
-
-            except Exception as e:
-                self.log_error(f"{log_prefix} error: {e}")
-
-        if can_play_led_effect:
-            mms_slot.slot_led.activate_blinking()
-        self.log_info_s(f"{log_prefix} done")
+        return success
 
     def _resume_slot_substitute(self, slot_num):
         slot_num_sub = self.mms.find_available_substitute_slot(slot_num)

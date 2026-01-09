@@ -319,15 +319,15 @@ class Buffer:
         self._inlet_triggered_before = False
 
     # ---- Feed & Retract ----
-    # def _simple_move_old(self, slot_num, distance, speed, accel):
-    #     mms_slot = self.mms.get_mms_slot(slot_num)
-    #     mms_drive = mms_slot.get_mms_drive()
-    #     mms_drive.update_focus_slot(slot_num)
-    #     # No select method
-    #     # if not mms_slot.selector_is_triggered():
-    #     #     self.mms_delivery.select_slot(slot_num)
-    #     # Manual Move
-    #     mms_drive.manual_move(distance, speed, accel)
+    def _simple_move_pure(self, slot_num, distance, speed, accel):
+        mms_slot = self.mms.get_mms_slot(slot_num)
+        mms_drive = mms_slot.get_mms_drive()
+        mms_drive.update_focus_slot(slot_num)
+        # No select method
+        # if not mms_slot.selector_is_triggered():
+        #     self.mms_delivery.select_slot(slot_num)
+        # Manual Move
+        mms_drive.manual_move(distance, speed, accel)
 
     def _simple_move(self, slot_num, distance, speed, accel):
         mms_slot = self.mms.get_mms_slot(slot_num)
@@ -338,29 +338,27 @@ class Buffer:
         #     self.mms_delivery.select_slot(slot_num)
 
         # Inlet is triggered last move and now is released
-        if self._inlet_triggered_before \
-            and mms_slot.inlet.is_released():
-            self.mms_filament_fracture.handle_while_feeding(slot_num)
+        if self._inlet_triggered_before and mms_slot.inlet.is_released():
+            self.mms_filament_fracture.force_handle_while_feeding(slot_num)
             return
 
-        # Record Inlet is triggered
+        # Update Inlet status
         self._inlet_triggered_before = mms_slot.inlet.is_triggered()
 
-        # Move
-        context = (
-            self.mms_filament_fracture.monitor_while_feeding(slot_num)
-            if distance>0 else nullcontext()
-        )
-        with context:
-            # Drip Move
-            # mms_drive.drip_move(distance, speed, accel)
-            # Manual Move
-            mms_drive.manual_move(distance, speed, accel)
+        # Drip Move
+        # context = (
+        #     self.mms_filament_fracture.monitor_while_feeding(slot_num)
+        #     if distance>0 else nullcontext()
+        # )
+        # with context:
+        #     mms_drive.drip_move(distance, speed, accel)
+
+        # Manual Move
+        mms_drive.manual_move(distance, speed, accel)
 
         # Inlet is triggered before manual_move and now is released
-        if self._inlet_triggered_before \
-            and mms_slot.inlet.is_released():
-            self.mms_filament_fracture.handle_while_feeding(slot_num)
+        if self._inlet_triggered_before and mms_slot.inlet.is_released():
+            self.mms_filament_fracture.force_handle_while_feeding(slot_num)
 
     def _feed(self, volume, extrude_speed):
         if not volume or volume < 0:

@@ -23,6 +23,9 @@ class SlotLED:
         # Current LED effect
         self.led_effect = None
 
+        # RFID
+        self._rfid_has_set_color = False
+
         self.mms_led_effect = MMSLedEffect()
         self.mms_led_event = MMSLedEvent()
 
@@ -32,15 +35,6 @@ class SlotLED:
     # ---- Commands ----
     def _effect_playing(self):
         return self.led_effect is not None
-
-    def _rfid_led_keep(self):
-        if not self.mms_slot.is_empty() \
-            and not self.mms_slot.is_new_insert() \
-            and self.mms_slot.slot_rfid \
-            and self.mms_slot.slot_rfid.has_tag_read():
-            # Slot has RFID tag read, don't update LED
-            return True
-        return False
 
     def notify(self):
         if self._effect_playing() or self._rfid_led_keep():
@@ -63,6 +57,19 @@ class SlotLED:
             color
         )
         self.log_info(f"slot[{self.slot_num}] new led color: {color}")
+
+    # ---- RFID Support ----
+    def _rfid_led_keep(self):
+        if not self.mms_slot.is_empty() \
+            and not self.mms_slot.is_new_insert() \
+            and self._rfid_has_set_color:
+            # Slot has RFID tag read, don't update LED
+            return True
+        return False
+
+    def rfid_set_color(self, color):
+        self._rfid_has_set_color = True
+        self.change_color(color)
 
     # ---- LED Effects ----
     def _activate(self, effect_name, effect_event, reverse=False):

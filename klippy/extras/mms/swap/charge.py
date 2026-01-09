@@ -16,6 +16,7 @@ from ..adapters import (
 from ..core.config import OptionalField, PrinterConfig
 from ..core.exceptions import ChargeFailedError
 from ..core.logger import log_time_cost
+from ..core.task import AsyncTask
 
 
 @dataclass(frozen=True)
@@ -36,6 +37,13 @@ class PrinterChargeConfig(PrinterConfig):
     # Extruder extrusion speed
     # Unit: mm/min
     extrude_speed: float = 300.0
+
+    # Extruder extrude distance per drip
+    # Unit: mm
+    drip_extrude_distance: float = 1.0
+    # Extra distance of extruder drip extrude
+    # Unit: mm
+    drip_extra_distance: float = 10.0
 
     # Filament Unload Settings (for failed charge attempts)
     # If filament is not properly loaded, unload before retry
@@ -62,6 +70,11 @@ class MMSCharge:
 
         # State tracking
         self._is_running = False
+        # Task state
+        # self._task_end = False
+        # self._task_success = False
+        # Extruder state
+        self._drip_extrude_end = False
 
         printer_adapter.register_klippy_ready(
             self._handle_klippy_ready)
@@ -75,11 +88,12 @@ class MMSCharge:
     def _initialize_mms(self):
         self.mms = printer_adapter.get_mms()
         self.mms_delivery = printer_adapter.get_mms_delivery()
+        self.mms_filament_fracture = self.mms.get_mms_filament_fracture()
 
     def _initialize_gcode(self):
         commands = [
             ("MMS_CHARGE", self.cmd_MMS_CHARGE),
-            ("MMS_SIMPLE_CHARGE", self.cmd_MMS_SIMPLE_CHARGE),
+            ("MMS_CAREFUL_CHARGE", self.cmd_MMS_CAREFUL_CHARGE),
         ]
         gcode_adapter.bulk_register(commands)
 
@@ -107,7 +121,14 @@ class MMSCharge:
     def pause(self, period_seconds):
         self.reactor.pause(self.reactor.monotonic() + period_seconds)
 
-    # ---- MMS Buffer control ----
+    def _exec_custom_macro(self, macro, position):
+        if macro:
+            self.log_info(
+                f"MMS execute macro {position} CHARGE:\n"
+                f"{macro}"
+            )
+            gcode_adapter.run_command(macro)
+
     def _pause_mms_buffer(self, slot_num):
         mms_slot = self.mms.get_mms_slot(slot_num)
         mms_buffer = mms_slot.get_mms_buffer()
@@ -124,25 +145,78 @@ class MMSCharge:
             )
         return mms_buffer
 
-    # ---- Charge ----
-    def _safety_checks(self, slot_num):
-        if slot_num is None:
-            self.log_warning("current slot is None, return")
-            return False
+    # ---- Async task ----
+    # def _init_task_state(self):
+    #     self._task_end = False
+    #     self._task_success = False
 
-        if self.is_running():
-            self.log_warning("another charge is running, return")
-            return False
+    # def _handle_task_end(self, result):
+    #     self._task_end = True
+    #     # result is None means task raise an error(maybe retry failed)
+    #     self._task_success = True if result not in (None, False) else False
 
-        # Check extruder
-        if not extruder_adapter.is_hot_enough():
+    def _async_careful_load(self, slot_num, distance):
+        # Setup and start careful load in background
+        func = self._careful_load
+        params = {"slot_num":slot_num, "distance":distance}
+        # callback = self._handle_task_end
+        callback = None
+        async_task = AsyncTask()
+        try:
+            # self._init_task_state()
+            if async_task.setup(func, params, callback):
+                async_task.start()
+        except Exception as e:
+            self.log_error(f"slot[{slot_num}] async careful load error: {e}")
             return False
-
         return True
+
+    def _careful_load(self, slot_num, distance):
+        mms_slot = self.mms.get_mms_slot(slot_num)
+        mms_drive = mms_slot.get_mms_drive()
+        pin_type = mms_slot.outlet.get_pin_type()
+        wait_func = mms_slot.get_wait_func(pin_type)
+        endstop_pair_lst = mms_slot.format_endstop_pair(pin_type)
+        # Calculate speed
+        speed = self.extrude_speed / 60
+
+        # # No retry loop
+        with wait_func():
+            with self.mms_filament_fracture.monitor_while_homing(slot_num):
+                mms_drive.update_focus_slot(slot_num)
+                mms_drive.manual_home(
+                    distance = abs(distance),
+                    speed = speed, accel = speed,
+                    forward = True, trigger = True,
+                    endstop_pair_lst = endstop_pair_lst,
+                )
+                # if mms_drive.move_is_completed(result):
+                # if mms_slot.outlet.is_released():
+                self._drip_extrude_end = True
+                    # return True
+        # return False
+
+    # ---- Extruder control ----
+    def _drip_extrude(
+        self, speed, drip_distance, drip_times, exit_condition
+    ):
+        # Sum distance of extruded
+        dist_extruded = 0
+
+        for i in range(int(drip_times)):
+            extruder_adapter.extrude(drip_distance, speed)
+            dist_extruded += drip_distance
+            # Condition achieved, exit
+            if exit_condition():
+                return True, dist_extruded
+            # Pause before next drip
+            self.pause(0.2)
+
+        # Finally false if condition is not achieved
+        return False, dist_extruded
 
     def _extrude_to_release_outlet(self, slot_num):
         mms_slot = self.mms.get_mms_slot(slot_num)
-
         if mms_slot.outlet.is_released():
             self.log_warning(
                 f"slot[{slot_num}] outlet is already released"
@@ -152,63 +226,118 @@ class MMSCharge:
         self.log_info_s(
             f"slot[{slot_num}] extrude to release outlet begin"
         )
-
-        for i in range(self.extrude_times):
-            extruder_adapter.extrude(
-                self.extrude_distance,
-                self.extrude_speed
-            )
-
-            if mms_slot.outlet.is_released():
-                dist = self.extrude_distance * (i+1)
-                self.log_info_s(
-                    f"slot[{slot_num}] outlet is released, "
-                    f"extrude: {dist} mm"
-                )
-                return True
-
-            self.pause(0.2)
-
-        dist = self.extrude_distance * self.extrude_times
-        self.log_warning(
-            f"slot[{slot_num}] outlet is not released after "
-            f"total extrude: {dist} mm"
+        result, dist_extruded = self._drip_extrude(
+            speed = self.extrude_speed,
+            drip_distance = self.extrude_distance,
+            drip_times = self.extrude_times,
+            exit_condition = mms_slot.outlet.is_released
         )
-        return False
+
+        msg = "released" if result else "not released"
+        self.log_info_s(
+            f"slot[{slot_num}] outlet is {msg}, "
+            f"extrude: {dist_extruded} mm"
+        )
+        return result
 
     def _extrude_to_trigger_runout(self, slot_num):
         mms_slot = self.mms.get_mms_slot(slot_num)
-
         if mms_slot.buffer_runout.is_triggered():
             self.log_warning(
-                f"slot[{slot_num}] buffer_runout is already triggered")
+                f"slot[{slot_num}] buffer_runout is already triggered"
+            )
             return False
 
         self.log_info_s(
-            f"slot[{slot_num}] extrude to trigger buffer_runout begin")
+            f"slot[{slot_num}] extrude to trigger buffer_runout begin"
+        )
+        result, dist_extruded = self._drip_extrude(
+            speed = self.extrude_speed,
+            drip_distance = self.extrude_distance,
+            drip_times = self.extrude_times,
+            exit_condition = mms_slot.outlet.is_triggered
+        )
 
-        for i in range(self.extrude_times):
-            extruder_adapter.extrude(
-                self.extrude_distance,
-                self.extrude_speed
+        msg = "triggered" if result else "not triggered"
+        self.log_info_s(
+            f"slot[{slot_num}] buffer_runout is {msg}, "
+            f"extrude: {dist_extruded} mm"
+        )
+        return result
+
+    def _careful_extrude(self, slot_num, distance_total):
+        mms_slot = self.mms.get_mms_slot(slot_num)
+
+        # Exit condition func
+        def exit_drip():
+            return self._drip_extrude_end \
+                or mms_slot.outlet.is_triggered()
+
+        # Check
+        if mms_slot.outlet.is_triggered():
+            self.log_warning(
+                f"slot[{slot_num}] careful extrude failed, "
+                "outlet is already triggered"
+            )
+            return False
+
+        # Init flag
+        self._drip_extrude_end = False
+        result, dist_extruded = self._drip_extrude(
+            speed = self.extrude_speed,
+            drip_distance = self.drip_extrude_distance,
+            drip_times = int(distance_total // self.drip_extrude_distance),
+            exit_condition = exit_drip
+        )
+        # Reset flag
+        self._drip_extrude_end = False
+
+        self.log_info_s(
+            f"slot[{slot_num}] exit careful extrude, "
+            f"extruded {dist_extruded} mm"
+        )
+        return result
+
+    # ---- Charge ----
+    def _careful_charge(self, slot_num):
+        log_prefix = f"slot[{slot_num}] careful charge"
+        self.log_info_s(f"{log_prefix} begin")
+
+        mms_slot = self.mms.get_mms_slot(slot_num)
+
+        # Prepare MMS_Buffer
+        mms_buffer = mms_slot.get_mms_buffer()
+        if not mms_buffer.clear(slot_num):
+            raise ChargeFailedError(
+                f"{log_prefix} halfway buffer failed", mms_slot
             )
 
-            if mms_slot.buffer_runout.is_triggered():
-                dist = self.extrude_distance * (i+1)
-                self.log_info_s(
-                    f"slot[{slot_num}] buffer_runout is triggered, "
-                    f"extrude: {dist} mm"
-                )
-                return True
-
-            self.pause(0.2)
-
-        dist = self.extrude_distance * self.extrude_times
-        self.log_warning(
-            f"slot[{slot_num}] buffer_runout is not triggered after "
-            f"total extrude: {dist} mm"
+        # Calculate the total distance should be careful deliver
+        distance_total = mms_buffer.get_spring_stroke() + \
+            self.drip_extra_distance
+        self.log_info_s(
+            f"{log_prefix} total distance: {distance_total} mm"
         )
-        return False
+
+        # Load task(async)
+        start = self._async_careful_load(slot_num, distance_total)
+        if not start:
+            # raise ChargeFailedError(f"{log_prefix} failed", mms_slot)
+            return False
+
+        # Extruder task(block)
+        self._careful_extrude(slot_num, distance_total)
+
+        # Stop running load task
+        slot_pin = mms_slot.get_waiting_pin()
+        if slot_pin and slot_pin is mms_slot.outlet:
+            mms_slot.stop_homing(slot_pin)
+
+        # Judge result with state of pins
+        # or mms_slot.buffer_runout.is_triggered() ?
+        result = False if mms_slot.outlet.is_triggered() else True
+        self.log_info_s(f"{log_prefix} finish, result is '{result}'")
+        return result
 
     def _standard_charge(self, slot_num):
         log_prefix = f"slot[{slot_num}] standard charge"
@@ -264,13 +393,20 @@ class MMSCharge:
         self.log_info_s(f"{log_prefix} finish")
         return True
 
-    def _exec_custom_macro(self, macro, position):
-        if macro:
-            self.log_info(
-                f"MMS execute macro {position} CHARGE:\n"
-                f"{macro}"
-            )
-            gcode_adapter.run_command(macro)
+    def _safety_checks(self, slot_num):
+        if slot_num is None:
+            self.log_warning("current slot is None, return")
+            return False
+
+        if self.is_running():
+            self.log_warning("another charge is running, return")
+            return False
+
+        # Check extruder
+        if not extruder_adapter.is_hot_enough():
+            return False
+
+        return True
 
     def mms_charge(self, slot_num):
         self._exec_custom_macro(self.custom_before, "before")
@@ -281,8 +417,7 @@ class MMSCharge:
         log_prefix = f"slot[{slot_num}] charge"
         self.log_info_s(f"{log_prefix} begin")
 
-        # Load before extruder check,
-        # make sure Outlet or Entry is triggered
+        # Load to make sure Outlet or Entry is triggered
         if not self.mms_delivery.mms_load(slot_num):
             self.log_warning(f"{log_prefix} load prepare failed")
             return False
@@ -292,21 +427,27 @@ class MMSCharge:
                 # Make sure mms_buffer is idle
                 self._pause_mms_buffer(slot_num)
 
-                retry_times = self.mms.get_retry_times()
-                success = False
-                # Retry loop
-                for i in range(retry_times):
-                    success = self._standard_charge(slot_num)
-                    if success:
-                        break
-                    self.log_info(f"{log_prefix} retry {i+1}/{retry_times} ...")
+                # Careful charge
+                success = self._careful_charge(slot_num)
 
-                # Retry end
+                # Standard charge if not success
                 if not success:
-                    raise ChargeFailedError(
-                        f"{log_prefix} failed after all retries",
-                        self.mms.get_mms_slot(slot_num)
-                    )
+                    retry_times = self.mms.get_retry_times()
+                    # Retry loop
+                    for i in range(retry_times):
+                        success = self._standard_charge(slot_num)
+                        if success:
+                            break
+                        self.log_info(
+                            f"{log_prefix} retry {i+1}/{retry_times} ..."
+                        )
+
+                    # Retry end
+                    if not success:
+                        raise ChargeFailedError(
+                            f"{log_prefix} failed after all retries",
+                            self.mms.get_mms_slot(slot_num)
+                        )
 
             except ChargeFailedError as e:
                 self.log_warning(e)
@@ -318,56 +459,6 @@ class MMSCharge:
 
         self.log_info_s(f"{log_prefix} finish")
         self._exec_custom_macro(self.custom_after, "after")
-        return True
-
-    def mms_simple_charge(self, slot_num):
-        if slot_num is None:
-            self.log_warning("current slot is None, return")
-            return False
-        if self.is_running():
-            self.log_warning("another charge is running, return")
-            return False
-
-        log_prefix = f"slot[{slot_num}] simple charge"
-        self.log_info_s(f"{log_prefix} begin")
-
-        # Load before extruder check,
-        # make sure Outlet or Entry is triggered
-        if not self.mms_delivery.mms_load(slot_num):
-            self.log_warning(f"{log_prefix} load prepare failed")
-            return False
-
-        with self._charge_is_running():
-            try:
-                # Make sure mms_buffer is idle
-                self._pause_mms_buffer(slot_num)
-
-                retry_times = self.mms.get_retry_times()
-                success = False
-                # Retry loop
-                for i in range(retry_times):
-                    success = self._standard_charge(slot_num)
-                    if success:
-                        break
-                    self.log_info(f"{log_prefix} retry {i+1}/{retry_times} ...")
-
-                # Retry end
-                if not success:
-                    raise ChargeFailedError(
-                        f"{log_prefix} failed after all retries",
-                        self.mms.get_mms_slot(slot_num)
-                    )
-
-            except ChargeFailedError as e:
-                self.log_warning(e)
-                return False
-            except Exception as e:
-                # May receive DeliveryFailedError
-                self.log_error(f"{log_prefix} error: {e}")
-                return False
-
-        self.log_info_s(f"{log_prefix} finish")
-
         return True
 
     # ---- GCode ----
@@ -390,15 +481,47 @@ class MMSCharge:
                 self.mms_charge(slot_num)
 
     @log_time_cost("log_info_s")
-    def cmd_MMS_SIMPLE_CHARGE(self, gcmd):
+    def cmd_MMS_CAREFUL_CHARGE(self, gcmd):
         slot_num = gcmd.get_int("SLOT", minval=0)
         if not self.mms.slot_is_available(slot_num):
             self.log_warning(
-                "slot is not available, MMS_SIMPLE_CHARGE failed"
+                "slot is not available, MMS_CAREFUL_CHARGE failed"
             )
             return
 
-        self.mms_simple_charge(slot_num)
+        for mms_slot in self.mms.get_mms_slots():
+            if mms_slot.gate.is_triggered():
+                self.log_warning(
+                    f"slot[{slot_num}] can not careful charge"
+                    f" when any gate is triggered")
+                return
+
+        log_prefix = f"slot[{slot_num}] careful charge"
+
+        with toolhead_adapter.snapshot():
+            if not self._safety_checks(slot_num):
+                return False
+
+            # Load before make sure Outlet or Entry is triggered
+            if not self.mms_delivery.mms_load(slot_num):
+                self.log_warning(f"{log_prefix} load prepare failed")
+                return False
+
+            with self._charge_is_running():
+                try:
+                    # Make sure mms_buffer is idle
+                    self._pause_mms_buffer(slot_num)
+
+                    success = self._careful_charge(slot_num)
+                    msg = "success" if success else "failed"
+                    self.log_info(f"{log_prefix} {msg}")
+
+                except ChargeFailedError as e:
+                    self.log_warning(e)
+                    self.log_info(f"{log_prefix} failed")
+                except Exception as e:
+                    # May receive DeliveryFailedError
+                    self.log_error(f"{log_prefix} error: {e}")
 
 
 def load_config(config):

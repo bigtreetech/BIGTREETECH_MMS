@@ -158,6 +158,9 @@ class BaseSlotPin(ABC):
     def get_mms_name(self):
         return self.pin_obj.get_mms_name()
 
+    def get_pin_type(self):
+        return self.pin_type
+
     # ---- Callbacks ----
     def add_trigger_callback(self, callback, params=None):
         self.pin_obj.register_trigger_callback(callback, params)

@@ -101,6 +101,8 @@ class MMSSlot:
         # Slot number of self substitute with
         self.substitute_with = None
 
+        self._is_ready = False
+
         # Initialize Pins
         self._initialize_pins()
 
@@ -178,6 +180,8 @@ class MMSSlot:
 
         self._initialize_substitute()
 
+        self._is_ready = True
+
     def _initialize_loggers(self):
         mms_logger = printer_adapter.get_mms_logger()
         self.log_info = mms_logger.create_log_info(console_output=True)
@@ -212,6 +216,14 @@ class MMSSlot:
     def _init_led_notify(self, eventtime):
         self.slot_led.notify()
         return self.reactor.NEVER
+
+    def get_status(self, eventtime=None):
+        if not self._is_ready:
+            return {}
+
+        return {
+            "rfid" : self.slot_rfid.get_status(),
+        }
 
     # ---- Get properties ----
     def get_num(self):

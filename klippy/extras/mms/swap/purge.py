@@ -90,9 +90,9 @@ class PrinterPurgeConfig(PrinterConfig):
 
     # Tray
     # X/Y coordinates of the purge tray location
-    tray_point: PointType = "(60.0, 300.0)"
+    tray_point: PointType = "(60.0, 100.0)"
     # X/Y coordinates for ejecting purged filament from tray
-    eject_point: PointType = "(60.0, 250.0)"
+    eject_point: PointType = "(60.0, 100.0)"
 
     # Custom Macro
     custom_before: OptionalField = "MMS_PURGE_CUSTOM_BEFORE"
