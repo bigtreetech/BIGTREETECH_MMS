@@ -1,782 +1,809 @@
-====
-MMS Change Log
-====
+# MMS Change Log
 
-Ver 0.1.0372
+## Ver 0.1.0377
 
-    Optimized the naming of the heater
+- Careful Charge test adjustments.
 
-Ver 0.1.0371
+- Config file path changed from "sample-bigtreetech-mms" to "bigtreetech-mms".
 
-    Enhanced the MMS_SWAP_MAPPING command. It now only requires SWAP_NUM and SLOT parameters, allowing for dynamic, real-time mapping of a logical tool (T-code) to a physical slot. Mappings are automatically reset at the end of the print.
+## Ver 0.1.0376
 
-Ver 0.1.0370
+- Delivery MMS_D_TEST/MMS996 test with forced filament fracture detection, filament load to outlet, triggers filament fracture sensor, proceeds to next SLOT, and loops 200 times.
 
-    Added a check for a specific slot state (selector=1, inlet=0, gate=1, runout=0, outlet=1, entry=1) to pause the print and prevent loading if any SLOT sharing the same Buffer is in this state.
+## Ver 0.1.0375
 
-    Minor improvements to the Custom Macro hooks for Swap, Eject, Charge, and Purge.
+- Charge added "careful charge" feature, which attempts slow feeding simultaneously before standard charge.
 
-Ver 0.1.0369
+- Command 'MMS_SIMPLE_CHARGE' removed.
 
-    Merged Alan's fix to PinsAdapter.allow_multi_use_pin() to correctly handle pins prefixed with ^ and ~.
+## Ver 0.1.0374
 
-Ver 0.1.0368
+- Enhanced RFID data interface; SLOT now includes get_status() to return RFID tag data.
 
-    Modified PinsAdapter.lookup_pin() to forcibly declare can_pullup=True, supporting pull-up resistor configurations.
+- Added MMS_RFID_TRUNCATE SLOT=n.
 
-    Added a forced G90 (absolute positioning) command before executing mms_pause() to prevent relative mode issues.
+## Ver 0.1.0373
 
-Ver 0.1.0367
+- Filament Fracture: Fixed issue where "Filament Fracture Disable" was ineffective; added check steps in mms_buffer's  simple_move() to prevent forced handle calls when disabled.
 
-    Reduced console log noise: Stepper status and last breath messages are now file-only.
+- handle_while_feeding: When purge is disabled, directly pauses and flashes light without performing purge operation.
 
-    Added the MMS_MOVE_SLOT command.
+- RFID: Added LED color cover and write functionality; new commands: MMS_RFID_READ, MMS_RFID_WRITE, MMS_RFID_DETECT_DEV, MMS_RFID_READ_DEV, MMS_RFID_WRITE_DEV.
 
-    Added a WAIT parameter to many Delivery commands (e.g., MMS_LOAD, MMS_MOVE) to let users choose between synchronous (blocking) and asynchronous (non-blocking) execution. The SPEED and ACCEL parameters are also now optional for MMS_MOVE and MMS_DRIP_MOVE.
+## Ver 0.1.0372
 
-Ver 0.1.0366
+- Optimized the naming of the heater.
 
-    Merged Alan's commits and formatted the code.
+## Ver 0.1.0371
 
-    Added input validation and user experience improvements (console responses) for macro commands.
+- Enhanced the MMS_SWAP_MAPPING command. It now only requires SWAP_NUM and SLOT parameters, allowing for dynamic, real-time mapping of a logical tool (T-code) to a physical slot. Mappings are automatically reset at the end of the print.
 
-    Disabled SLOT substitution by default.
+## Ver 0.1.0370
 
-Ver 0.1.0363 ~ 0.1.0365
+- Added a check for a specific slot state (selector=1, inlet=0, gate=1, runout=0, outlet=1, entry=1) to pause the print and prevent loading if any SLOT sharing the same Buffer is in this state.
 
-    Removed the slot_num requirement for mms_cut, allowing cutting on an empty slot.
+- Minor improvements to the Custom Macro hooks for Swap, Eject, Charge, and Purge.
 
-    Added the MMS_SLOTS_CHECK command to load and verify all sensors for all slots.
+## Ver 0.1.0369
 
-    Added the MMS_SIMPLE_CHARGE command, a simplified version that does not require heating, gate checks, or toolhead snapshots.
+- Merged Alan's fix to PinsAdapter.allow_multi_use_pin() to correctly handle pins prefixed with ^ and ~.
 
-    Updated configuration file formatting to a cleaner, aligned style.
+## Ver 0.1.0368
 
-    Added a suite of user-friendly macro commands for Mainsail/Fluidd users (e.g., MMS CHECK, MMS LOAD, MMS DISABLE).
+- Modified PinsAdapter.lookup_pin() to forcibly declare can_pullup=True, supporting pull-up resistor configurations.
 
-Ver 0.1.0361 ~ 0.1.0362
+- Added a forced G90 (absolute positioning) command before executing mms_pause() to prevent relative mode issues.
 
-    Fixed a bug in the Observer's print state judgment that caused incorrect behavior. The previous change was reverted.
+## Ver 0.1.0367
 
-    Modified the _async_purge_feed() logic to use direct mms_drive.manual_move() calls instead of the high-level mms_delivery.mms_move() to prevent coordination failures during Purge.
+- Reduced console log noise: Stepper status and last breath messages are now file-only.
 
-    Discussed and planned for a more user-centric configuration management style.
+- Added the MMS_MOVE_SLOT command.
 
-Ver 0.1.0358 ~ 0.1.0360
+- Added a WAIT parameter to many Delivery commands (e.g., MMS_LOAD, MMS_MOVE) to let users choose between synchronous (blocking) and asynchronous (non-blocking) execution. The SPEED and ACCEL parameters are also now optional for MMS_MOVE and MMS_DRIP_MOVE.
 
-    Updated the Observer module to include idle_timeout status checks for more accurate print state detection.
+## Ver 0.1.0366
 
-    Added MMS_AUTOLOAD_ENABLE and MMS_AUTOLOAD_DISABLE commands.
+- Merged Alan's commits and formatted the code.
 
-    Restructured the directory hierarchy and paths for the sample configuration files (sample-bigtreetech-mms/), keeping the old version as sample-bigtreetech-mms_dev.
+- Added input validation and user experience improvements (console responses) for macro commands.
 
-Ver 0.1.0356 ~ 0.1.0357
+- Disabled SLOT substitution by default.
 
-    Temporarily silenced Neopixel error messages in the Adapter.
+## Ver 0.1.0363 ~ 0.1.0365
 
-    Separated Autoload configuration, removing its independent distance setting and unifying it with the Delivery module's parameters. Renamed semi_autoload to pre_load.
+- Removed the slot_num requirement for mms_cut, allowing cutting on an empty slot.
 
-Ver 0.1.0354 ~ 0.1.0355
+- Added the MMS_SLOTS_CHECK command to load and verify all sensors for all slots.
 
-    Added SLOT substitution feature, which is active only for the current print session. Updated configuration files accordingly.
+- Added the MMS_SIMPLE_CHARGE command, a simplified version that does not require heating, gate checks, or toolhead snapshots.
 
-    Added a function in the Swap module to dynamically update the slot mapping during a print.
+- Updated configuration file formatting to a cleaner, aligned style.
 
-Ver 0.1.0351 ~ 0.1.0353
+- Added a suite of user-friendly macro commands for Mainsail/Fluidd users (e.g., MMS CHECK, MMS LOAD, MMS DISABLE).
 
-    Added filament fracture monitoring during Buffer Feed/Retract operations. Enhanced detection logic with a maximum distance limit to prevent issues with stuck Entry sensors. The module selects a different slot before purging to ensure no resistance in the Bowden tube.
+## Ver 0.1.0361 ~ 0.1.0362
 
-Ver 0.1.0349 ~ 0.1.0350
+- Fixed a bug in the Observer's print state judgment that caused incorrect behavior. The previous change was reverted.
 
-    Extracted Filament Fracture Detection from the Delivery module into a standalone module. Interaction with other modules now uses standard mms_* processes, with different post-fracture logic for homing vs. feeding operations.
+- Modified the _async_purge_feed() logic to use direct mms_drive.manual_move() calls instead of the high-level mms_delivery.mms_move() to prevent coordination failures during Purge.
 
-Ver 0.1.0348
+- Discussed and planned for a more user-centric configuration management style.
 
-    Refactored MMS to use a new configuration parsing system.
+## Ver 0.1.0358 ~ 0.1.0360
 
-    Refactored SLOT to use the new config system, splitting out SLOT_LED and SLOT_RFID components.
+- Updated the Observer module to include idle_timeout status checks for more accurate print state detection.
 
-Ver 0.1.0347
+- Added MMS_AUTOLOAD_ENABLE and MMS_AUTOLOAD_DISABLE commands.
 
-    Fixed a bug introduced in 0.1.0344 where the first Tn command after starting a print might skip the load step, causing empty extrusion. Reverted to always purging on same-slot swaps.
+- Restructured the directory hierarchy and paths for the sample configuration files (sample-bigtreetech-mms/), keeping the old version as sample-bigtreetech-mms_dev.
 
-    Briefly re-enabled Charge logic relying on buffer_runout instead of outlet due to a new Buffer hardware revision, but rolled back after limited testing.
+## Ver 0.1.0356 ~ 0.1.0357
 
-Ver 0.1.0345 ~ 0.1.0346
+- Temporarily silenced Neopixel error messages in the Adapter.
 
-    Fixed duplicate mms_pause() calls in Delivery and Swap modules that could cause Klipper errors.
+- Separated Autoload configuration, removing its independent distance setting and unifying it with the Delivery module's parameters. Renamed semi_autoload to pre_load.
 
-    Fixed a bug where, after a filament fracture during Charge, resuming and failing again could lead to empty extrusion ("air printing").
+## Ver 0.1.0354 ~ 0.1.0355
 
-    Reverted Buffer Feed/Retract from DripMove back to ManualMove due to TTC risks under high-frequency updates during certain print patterns (e.g., wiping towers). New fracture handling during printing is under development.
+- Added SLOT substitution feature, which is active only for the current print session. Updated configuration files accordingly.
 
-Ver 0.1.0344
+- Added a function in the Swap module to dynamically update the slot mapping during a print.
 
-    Optimized mms_swap behavior for same-slot swaps (Tn -> Tn).
+## Ver 0.1.0351 ~ 0.1.0353
 
-    Merged Alan's Heater config updates.
+- Added filament fracture monitoring during Buffer Feed/Retract operations. Enhanced detection logic with a maximum distance limit to prevent issues with stuck Entry sensors. The module selects a different slot before purging to ensure no resistance in the Bowden tube.
 
-    Added slot_led.activate_blinking() to handle_filament_fracture() in Delivery, triggering a blinking LED effect on the affected SLOT.
+## Ver 0.1.0349 ~ 0.1.0350
 
-Ver 0.1.0343
+- Extracted Filament Fracture Detection from the Delivery module into a standalone module. Interaction with other modules now uses standard mms_* processes, with different post-fracture logic for homing vs. feeding operations.
 
-    Added forward/backward check in Delivery._drive_deliver_to(): Filament fracture detection now only runs during forward (load) moves, not during retracts.
+## Ver 0.1.0348
 
-    Tightened error handling: any mms_buffer operation (fill/clear/halfway) failure now interrupts the Swap/Charge/Purge process.
+- Refactored MMS to use a new configuration parsing system.
 
-    Reduced SlotPin break delay from 0.5s to 0.1s.
+- Refactored SLOT to use the new config system, splitting out SLOT_LED and SLOT_RFID components.
 
-    Made Trigger/Release logs silent in the console (file-only).
+## Ver 0.1.0347
 
-Ver 0.1.0342
+- Fixed a bug introduced in 0.1.0344 where the first Tn command after starting a print might skip the load step, causing empty extrusion. Reverted to always purging on same-slot swaps.
 
-    Adjusted log output format and timing.
+- Briefly re-enabled Charge logic relying on buffer_runout instead of outlet due to a new Buffer hardware revision, but rolled back after limited testing.
 
-    Reverted Pin parsing logic to the upstream Klipper Master version.
+## Ver 0.1.0345 ~ 0.1.0346
 
-    Re-implemented DripMove motion using motion_queuing.drip_update_timer(), adding a Terminate function.
+- Fixed duplicate mms_pause() calls in Delivery and Swap modules that could cause Klipper errors.
 
-    Added drip_move_* functions to Delivery and the MMS_DRIP_MOVE command. Updated MMS_STOP/mms_stop() to support interrupting DripMove motions.
+- Fixed a bug where, after a filament fracture during Charge, resuming and failing again could lead to empty extrusion ("air printing").
 
-Ver 0.1.0341
+- Reverted Buffer Feed/Retract from DripMove back to ManualMove due to TTC risks under high-frequency updates during certain print patterns (e.g., wiping towers). New fracture handling during printing is under development.
 
-    Deleted motion/dripload.py.
+## Ver 0.1.0344
 
-    Enhanced Load to Entry retry logic: if the Outlet sensor triggered at any point, the print pauses with a warning.
+- Optimized mms_swap behavior for same-slot swaps (Tn -> Tn).
 
-    Standardized filament fracture handling: all breaks trigger an Unload and Pause.
+- Merged Alan's Heater config updates.
 
-Ver 0.1.0340
+- Added slot_led.activate_blinking() to handle_filament_fracture() in Delivery, triggering a blinking LED effect on the affected SLOT.
 
-    Commented out the final mms_buffer.halfway() in Charge for a smoother swap.
+## Ver 0.1.0343
 
-    Changed default Delivery parameters: speed_drive: 80, accel_drive: 40.
+- Added forward/backward check in Delivery._drive_deliver_to(): Filament fracture detection now only runs during forward (load) moves, not during retracts.
 
-    Updated RFID development plans; paused due to Elegoo's lack of RFID filament.
+- Tightened error handling: any mms_buffer operation (fill/clear/halfway) failure now interrupts the Swap/Charge/Purge process.
 
-Ver 0.1.0336 ~ 0.1.0339
+- Reduced SlotPin break delay from 0.5s to 0.1s.
 
-    Merged upstream Klipper Master updates (commit 2e58023).
+- Made Trigger/Release logs silent in the console (file-only).
 
-    Smoothed the SWAP process:
+## Ver 0.1.0342
 
-        Eject: If purge is enabled, move to the Tray point before and after cutting.
+- Adjusted log output format and timing.
 
-        Purge: Disabled pressure_pulse_cleaning by default and removed the final mms_buffer.halfway().
+- Reverted Pin parsing logic to the upstream Klipper Master version.
 
-        Brush: Disabled Peck by default.
+- Re-implemented DripMove motion using motion_queuing.drip_update_timer(), adding a Terminate function.
 
-        Swap: Moved the final mms_buffer.halfway() to occur before mms_brush.
+- Added drip_move_* functions to Delivery and the MMS_DRIP_MOVE command. Updated MMS_STOP/mms_stop() to support interrupting DripMove motions.
 
-    Fixed a bug where Pause/Resume failed after a failed Resume: A timer now resets the is_paused flag to True 1 second after a failed resume, allowing subsequent resume attempts.
+## Ver 0.1.0341
 
-    Fixed a Z-axis homing issue after multiple Pause/Resume cycles by modifying the Z-axis recovery strategy in Swap.
+- Deleted motion/dripload.py.
 
-Ver 0.1.0335
+- Enhanced Load to Entry retry logic: if the Outlet sensor triggered at any point, the print pauses with a warning.
 
-    Removed printing restrictions for many MMS commands to allow use during prints, and added aliases to prevent accidental UI triggers:
+- Standardized filament fracture handling: all breaks trigger an Unload and Pause.
 
-        Buffer commands: MMS_BUFFER_FILL/CLEAR/HALFWAY/ACTIVATE/DEACTIVATE/MEASURE.
+## Ver 0.1.0340
 
-        Delivery commands: MMS_SELECT->MMS_SELECT_U, MMS_LOAD->MMS_LOAD_U, MMS_POP->MMS_POP_U, MMS_PREPARE->MMS_PREPARE_U. MMS_UNLOAD/MOVE/UNSELECT unchanged.
+- Commented out the final mms_buffer.halfway() in Charge for a smoother swap.
 
-        Swap commands: MMS_EJECT, MMS_CHARGE, MMS_PURGE, MMS_TRAY, MMS_TRAY_EJECT, MMS_CUT, MMS_BRUSH, MMS_BRUSH_WIPE, MMS_BRUSH_PECK.
+- Changed default Delivery parameters: speed_drive: 80, accel_drive: 40.
 
-    Drastically reduced console log output. Key logs (SLOT Pin changes, warnings/errors, user macros, SWAP mapping, MMS status) remain, while detailed process logs are directed to the mms.log file only.
+- Updated RFID development plans; paused due to Elegoo's lack of RFID filament.
 
-Ver 0.1.0333
+## Ver 0.1.0336 ~ 0.1.0339
 
-    Attempted to modify Klipper's pins.py to support multiple endstops per homing move, but the implementation failed at the C-level and was shelved.
+- Merged upstream Klipper Master updates (commit 2e58023).
 
-    Refactored SLOT Pins related classes into core/slot_pin.py. Updated references in other modules.
+- Smoothed the SWAP process:
 
-    Created SLOTGateInvert but did not instantiate it due to the shelved homing feature.
+  - Eject: If purge is enabled, move to the Tray point before and after cutting.
 
-Ver 0.1.0332
+  - Purge: Disabled pressure_pulse_cleaning by default and removed the final mms_buffer.halfway().
 
-    Adjusted function names and updated calls in other modules.
+  - Brush: Disabled Peck by default.
 
-    Adjusted member registration in the extend module.
+  - Swap: Moved the final mms_buffer.halfway() to occur before mms_brush.
 
-    Improved control over the is_paused flag in mms_resume to prevent "Print is not paused, resume aborted" issues after Pause/Resume failures.
+- Fixed a bug where Pause/Resume failed after a failed Resume: A timer now resets the is_paused flag to True 1 second after a failed resume, allowing subsequent resume attempts.
 
-    Optimized the Eject workflow to prioritize and sort loading slots, improving safety for multi-slot scenarios.
+- Fixed a Z-axis homing issue after multiple Pause/Resume cycles by modifying the Z-axis recovery strategy in Swap.
 
-    Deleted legacy mms_eject process code.
+## Ver 0.1.0335
 
-Ver 0.1.0331
+- Removed printing restrictions for many MMS commands to allow use during prints, and added aliases to prevent accidental UI triggers:
 
-    Added MMS version output to the last_breath log.
+  - Buffer commands: MMS_BUFFER_FILL/CLEAR/HALFWAY/ACTIVATE/DEACTIVATE/MEASURE.
 
-    Modified toolhead_adapter to restore toolhead snapshot and heat to target temperature without waiting (wait=False).
+  - Delivery commands: MMS_SELECT->MMS_SELECT_U, MMS_LOAD->MMS_LOAD_U, MMS_POP->MMS_POP_U, MMS_PREPARE->MMS_PREPARE_U. MMS_UNLOAD/MOVE/UNSELECT unchanged.
 
-    Made Delivery stepper state waits more strict: even async tasks will block and wait (5s timeout) if the stepper is not idle.
+  - Swap commands: MMS_EJECT, MMS_CHARGE, MMS_PURGE, MMS_TRAY, MMS_TRAY_EJECT, MMS_CUT, MMS_BRUSH, MMS_BRUSH_WIPE, MMS_BRUSH_PECK.
 
-    Fixed a bug where the mms_pause flag was incorrectly cleared after a failed Resume retry in the Pause/Resume flow.
+- Drastically reduced console log output. Key logs (SLOT Pin changes, warnings/errors, user macros, SWAP mapping, MMS status) remain, while detailed process logs are directed to the mms.log file only.
 
-Ver 0.1.0330
+## Ver 0.1.0333
 
-    Moved the MFRC522 RFID driver from Klipper's extras directory into the mms/hardware module, removing its generic config loading functionality and integrating it specifically for MMS use.
+- Attempted to modify Klipper's pins.py to support multiple endstops per homing move, but the implementation failed at the C-level and was shelved.
 
-Ver 0.1.0326 ~ 0.1.0328
+- Refactored SLOT Pins related classes into core/slot_pin.py. Updated references in other modules.
 
-    Fixed a bug in mms_eject exception handling related to incorrect slot_num reference.
+- Created SLOTGateInvert but did not instantiate it due to the shelved homing feature.
 
-    Enhanced Pause/Resume logic to prevent duplicate resume submissions and associated issues (like "Move out of range" errors) by better controlling the is_paused state flag.
+## Ver 0.1.0332
 
-Ver 0.1.0323 ~ 0.1.0325
+- Adjusted function names and updated calls in other modules.
 
-    Optimized the Charge retry logic, reducing nested retries from 9 to 6 attempts.
+- Adjusted member registration in the extend module.
 
-    Introduced ChargeFailedError to trigger LED blinking on charge failures.
+- Improved control over the is_paused flag in mms_resume to prevent "Print is not paused, resume aborted" issues after Pause/Resume failures.
 
-    Updated several test machines to this version.
+- Optimized the Eject workflow to prioritize and sort loading slots, improving safety for multi-slot scenarios.
 
-Ver 0.1.0321 ~ 0.1.0322
+- Deleted legacy mms_eject process code.
 
-    Fixed a bug where resuming and deactivating an LED blinking effect could cause a Reactor error and Klipper shutdown due to changes in timer state management.
+## Ver 0.1.0331
 
-    Revised the Eject workflow to improve safety, especially for handling multiple loaded slots and determining when to cut filament. Introduced EjectFailedError to trigger LED blinking on failure.
+- Added MMS version output to the last_breath log.
 
-Ver 0.1.0320
+- Modified toolhead_adapter to restore toolhead snapshot and heat to target temperature without waiting (wait=False).
 
-    Integrated Klipper's Motion Queuing system, which uses separate threads for each stepper motor managed by a global module.
+- Made Delivery stepper state waits more strict: even async tasks will block and wait (5s timeout) if the stepper is not idle.
 
-    Resolved the root cause of Extruder/Drive movement blockage, which was a call to toolhead.flush_step_generation() within ManualStepper.do_set_position().
+- Fixed a bug where the mms_pause flag was incorrectly cleared after a failed Resume retry in the Pause/Resume flow.
 
-    Modified SLOT LED initialization to light up sequentially with a delay.
+## Ver 0.1.0330
 
-Ver 0.1.0316 ~ 0.1.0319
+- Moved the MFRC522 RFID driver from Klipper's extras directory into the mms/hardware module, removing its generic config loading functionality and integrating it specifically for MMS use.
 
-    Continued merging upstream Klipper updates, focusing on the new Motion Queuing system which replaces manual step generation and flushing.
+## Ver 0.1.0326 ~ 0.1.0328
 
-    Removed DripMoveDispatch and related logic.
+- Fixed a bug in mms_eject exception handling related to incorrect slot_num reference.
 
-    Fixed MMSStepper.reset_position() to correctly update the ManualStepper's internal position, resolving blockages when Extruder and Drive movements occurred simultaneously.
+- Enhanced Pause/Resume logic to prevent duplicate resume submissions and associated issues (like "Move out of range" errors) by better controlling the is_paused state flag.
 
-Ver 0.1.0313 ~ 0.1.0315
+## Ver 0.1.0323 ~ 0.1.0325
 
-    Adapted MMS to upstream Klipper updates (commit 'b4c7cf4'), specifically changes in the Klippy connect/ready callbacks that no longer allow reactor.pause().
+- Optimized the Charge retry logic, reducing nested retries from 9 to 6 attempts.
 
-    Modified Autoload startup delay and SLOT LED initialization to avoid using pause in callbacks.
+- Introduced ChargeFailedError to trigger LED blinking on charge failures.
 
-    Updated PeriodicTask in Task.py to handle changes in the Reactor's timer management.
+- Updated several test machines to this version.
 
-Ver 0.1.0312
+## Ver 0.1.0321 ~ 0.1.0322
 
-    Further reduced console logging, keeping full logs only in mms.log.
+- Fixed a bug where resuming and deactivating an LED blinking effect could cause a Reactor error and Klipper shutdown due to changes in timer state management.
 
-    Merged and adapted to upstream Klipper updates from 2025-08-12 to 2025-11-19 (including MCU, Toolhead, motion queuing, and Reactor changes). No firmware re-flash required.
+- Revised the Eject workflow to improve safety, especially for handling multiple loaded slots and determining when to cut filament. Introduced EjectFailedError to trigger LED blinking on failure.
 
-Ver 0.1.0311
+## Ver 0.1.0320
 
-    Reverted the mms_charge._standard_charge() logic in version 0.1.0310 back to depending on the Outlet (PA5) sensor due to reliability issues with the new method.
+- Integrated Klipper's Motion Queuing system, which uses separate threads for each stepper motor managed by a global module.
 
-Ver 0.1.0310
+- Resolved the root cause of Extruder/Drive movement blockage, which was a call to toolhead.flush_step_generation() within ManualStepper.do_set_position().
 
-    Reduced console log noise; detailed logs are now only written to the mms.log file.
+- Modified SLOT LED initialization to light up sequentially with a delay.
 
-    Modified mms_charge and mms_buffer.halfway() logic to rely less on the Outlet (PA5) sensor by using the new four-phase movement capabilities.
+## Ver 0.1.0316 ~ 0.1.0319
 
-    Updated mms_buffer.halfway() to use buffer_runout sensor for positioning.
+- Continued merging upstream Klipper updates, focusing on the new Motion Queuing system which replaces manual step generation and flushing.
 
-Ver 0.1.0306
+- Removed DripMoveDispatch and related logic.
 
-    Updated Observer logic to monitor VirtualSD.must_pause_work for more accurate print pause state detection, addressing timing issues with PrintStats.state.
+- Fixed MMSStepper.reset_position() to correctly update the ManualStepper's internal position, resolving blockages when Extruder and Drive movements occurred simultaneously.
 
-Ver 0.1.0304 ~ 0.1.0305
+## Ver 0.1.0313 ~ 0.1.0315
 
-    Extracted Pause/Resume logic into dedicated MMS_PAUSE and MMS_RESUME modules to centralize management and resolve recurring issues.
+- Adapted MMS to upstream Klipper updates (commit 'b4c7cf4'), specifically changes in the Klippy connect/ready callbacks that no longer allow reactor.pause().
 
-    MMS_RESUME intercepts and manages the standard resume command execution.
+- Modified Autoload startup delay and SLOT LED initialization to avoid using pause in callbacks.
 
-Ver 0.1.0303
+- Updated PeriodicTask in Task.py to handle changes in the Reactor's timer management.
 
-    Enhanced temperature control: toolhead_adapter now saves and restores target temperatures during Pause/Resume.
+## Ver 0.1.0312
 
-    Addressed potential Pause recursion issues and internal data persistence problems within Adapters modules after Klipper service restarts.
+- Further reduced console logging, keeping full logs only in mms.log.
 
-    Commented out the idle_timeout callback manager to resolve related issues.
+- Merged and adapted to upstream Klipper updates from 2025-08-12 to 2025-11-19 (including MCU, Toolhead, motion queuing, and Reactor changes). No firmware re-flash required.
 
-Ver 0.1.0302
+## Ver 0.1.0311
 
-    Added user Macro hooks (*_CUSTOM_BEFORE/AFTER) for Swap, Eject, Charge, Purge, and Brush modules, allowing user script injection into the standard workflow.
+- Reverted the mms_charge._standard_charge() logic in version 0.1.0310 back to depending on the Outlet (PA5) sensor due to reliability issues with the new method.
 
-Ver 0.1.0301
+## Ver 0.1.0310
 
-    Decoupled motion direction from sensor trigger/release states in Delivery/Stepper, enabling all four movement combinations (forward/backward to trigger/release).
+- Reduced console log noise; detailed logs are now only written to the mms.log file.
 
-    Changed mms_buffer.clear() to use unload_to_buffer_runout() instead of the old fill() + retract method.
+- Modified mms_charge and mms_buffer.halfway() logic to rely less on the Outlet (PA5) sensor by using the new four-phase movement capabilities.
 
-    Simplified measure_stroke() implementation.
+- Updated mms_buffer.halfway() to use buffer_runout sensor for positioning.
 
-    Removed remaining Selector Swing code.
+## Ver 0.1.0306
 
-Ver 0.1.0300
+- Updated Observer logic to monitor VirtualSD.must_pause_work for more accurate print pause state detection, addressing timing issues with PrintStats.state.
 
-    Enhanced the Toolhead snapshot feature to store/restore target_temp and use non-blocking heating on resume.
+## Ver 0.1.0304 ~ 0.1.0305
 
-    Removed toolhead_adapter.release_pressure calls during Purge for smoother operation.
+- Extracted Pause/Resume logic into dedicated MMS_PAUSE and MMS_RESUME modules to centralize management and resolve recurring issues.
 
-    Added a pre-check for stepper_enable.is_motor_enable() in Stepper.enable() to prevent potential toolhead stuttering.
+- MMS_RESUME intercepts and manages the standard resume command execution.
 
-Ver 0.1.0298 ~ 0.1.0299
+## Ver 0.1.0303
 
-    Added manual truncate_snapshot call on Swap failure to prevent the toolhead from moving back to the print point incorrectly.
+- Enhanced temperature control: toolhead_adapter now saves and restores target temperatures during Pause/Resume.
 
-    Added wait steps for Selector/Drive steppers in apply_nozzle_priming() to prevent skipping during asynchronous tasks.
+- Addressed potential Pause recursion issues and internal data persistence problems within Adapters modules after Klipper service restarts.
 
-Ver 0.1.0295 ~ 0.1.0297
+- Commented out the idle_timeout callback manager to resolve related issues.
 
-    Tested the Pressure Pulse Cleaning feature.
+## Ver 0.1.0302
 
-    Removed the safety logic that limited apply_nozzle_priming distance based on buffer spring stroke; now uses the configured value directly.
+- Added user Macro hooks (*_CUSTOM_BEFORE/AFTER) for Swap, Eject, Charge, Purge, and Brush modules, allowing user script injection into the standard workflow.
 
-    Fixed safety check logic when slot_from is None during a Swap.
+## Ver 0.1.0301
 
-    Fixed an LED blinking effect deactivation bug by switching to use stepper events (mms:stepper:running/idle) for triggering.
+- Decoupled motion direction from sensor trigger/release states in Delivery/Stepper, enabling all four movement combinations (forward/backward to trigger/release).
 
-    Removed all Stepper Soft Stop related code and configurations.
+- Changed mms_buffer.clear() to use unload_to_buffer_runout() instead of the old fill() + retract method.
 
-Ver 0.1.0291 ~ 0.1.0294
+- Simplified measure_stroke() implementation.
 
-    Added Pressure Pulse Cleaning functionality to the Purge module for nozzle maintenance and material flushing, to be used before cutting or cold pulling.
+- Removed remaining Selector Swing code.
 
-    Removed the ParkPoint feature and its related code and configurations.
+## Ver 0.1.0300
 
-Ver 0.1.0290
+- Enhanced the Toolhead snapshot feature to store/restore target_temp and use non-blocking heating on resume.
 
-    Implemented a new, type-safe configuration parsing system with a class inheritance structure for all *.cfg files.
+- Removed toolhead_adapter.release_pressure calls during Purge for smoother operation.
 
-    Standardized and enhanced English comments in all MMS Swap module configuration files for better clarity and documentation.
+- Added a pre-check for stepper_enable.is_motor_enable() in Stepper.enable() to prevent potential toolhead stuttering.
 
-Ver 0.1.0286
+## Ver 0.1.0298 ~ 0.1.0299
 
-    Streamlined the Swap process flow, cleaned up code, and added comprehensive logging and comments.
+- Added manual truncate_snapshot call on Swap failure to prevent the toolhead from moving back to the print point incorrectly.
 
-    Conducted testing on the new Swap modules (Cut, Eject, Charge, Purge, Brush, Swap).
+- Added wait steps for Selector/Drive steppers in apply_nozzle_priming() to prevent skipping during asynchronous tasks.
 
-Ver 0.1.0285
+## Ver 0.1.0295 ~ 0.1.0297
 
-    Refactored the Swap module, restructuring it into separate, focused components: swap.py, charge.py, cut.py, eject.py, purge.py, brush.py, and utils.py.
+- Tested the Pressure Pulse Cleaning feature.
 
-    Each module now provides business-specific checks, state management, and exception handling.
+- Removed the safety logic that limited apply_nozzle_priming distance based on buffer spring stroke; now uses the configured value directly.
 
-Ver 0.1.0283
+- Fixed safety check logic when slot_from is None during a Swap.
 
-    Clarified and structured the Swap process flow, defining enable/disable conditions for each step: eject, cut, mms_delivery.unload, charge, purge, and brush.
+- Fixed an LED blinking effect deactivation bug by switching to use stepper events (mms:stepper:running/idle) for triggering.
 
-Ver 0.1.0282
+- Removed all Stepper Soft Stop related code and configurations.
 
-    Refactored Toolhead movement logic in Adapters. Abstracted XYZ-axis movement scheduling from gcode_move_adapter into toolhead_adapter.
+## Ver 0.1.0291 ~ 0.1.0294
 
-    Added Toolhead snapshot feature to save/restore XYZ position, extruder temperature, and fan speed.
+- Added Pressure Pulse Cleaning functionality to the Purge module for nozzle maintenance and material flushing, to be used before cutting or cold pulling.
 
-    Added Fan cooldown functionality accessible across mms_clean, mms_purge, and mms_swap modules.
+- Removed the ParkPoint feature and its related code and configurations.
 
-Ver 0.1.0281
+## Ver 0.1.0290
 
-    Completed iterations on Clean module functions: fan_cooldown, brush wipe/peck, and retraction_compensation.
+- Implemented a new, type-safe configuration parsing system with a class inheritance structure for all *.cfg files.
 
-    Added (non-operational) logic for wipe_cold (cold wiping).
+- Standardized and enhanced English comments in all MMS Swap module configuration files for better clarity and documentation.
 
-Ver 0.1.0280
+## Ver 0.1.0286
 
-    Separated Purge from Clean module. Purge now handles internal cleaning (hot/cold purging, pressure equalization). Clean handles external cleaning (brush wiping, tray knock-off).
+- Streamlined the Swap process flow, cleaned up code, and added comprehensive logging and comments.
 
-    Purge module introduces adaptive purge length calculation based on material type and color differences using a matrix mapping system.
+- Conducted testing on the new Swap modules (Cut, Eject, Charge, Purge, Brush, Swap).
 
-    Implemented different purge strategies for setups with/without a cutter and with/without a purge tray.
+## Ver 0.1.0285
 
-    Enhanced brush_wipe with adaptive calculations, material-specific temperatures, droplet-drip steps, cold wiping, and multi-directional/pecking motions.
+- Refactored the Swap module, restructuring it into separate, focused components: swap.py, charge.py, cut.py, eject.py, purge.py, brush.py, and utils.py.
 
-    Implemented knock_off_blob action sequence for blob ejection from a purge tray.
+- Each module now provides business-specific checks, state management, and exception handling.
 
-Ver 0.1.0271 ~ 0.1.0273
+## Ver 0.1.0283
 
-    Changed exception handling for Endstop Homing errors. Previously, MMS Stepper code caught all Exceptions, silently suppressing underlying CommandErrors from HomingMove. Now these CommandErrors are allowed to propagate.
+- Clarified and structured the Swap process flow, defining enable/disable conditions for each step: eject, cut, mms_delivery.unload, charge, purge, and brush.
 
-    Introduced a DeliveryCommandError to wrap the original CommandError and stack trace for better debugging.
+## Ver 0.1.0282
 
-    If MMS catches a CommandError, it now directly calls Printer.emergency_stop for a cleaner shutdown process.
+- Refactored Toolhead movement logic in Adapters. Abstracted XYZ-axis movement scheduling from gcode_move_adapter into toolhead_adapter.
 
-Ver 0.1.0270
+- Added Toolhead snapshot feature to save/restore XYZ position, extruder temperature, and fan speed.
 
-    Enhanced status reporting for external UIs. Iterated on the MMS module's get_status(eventtime) function to integrate data via Klipper/Moonraker hooks.
+- Added Fan cooldown functionality accessible across mms_clean, mms_purge, and mms_swap modules.
 
-    Consolidated and structured status returns from mms.slot_meta, mms_slot, mms_stepper, and mms_buffer objects for external consumption (primarily by KlipperScreen).
+## Ver 0.1.0281
 
-Ver 0.1.0263
+- Completed iterations on Clean module functions: fan_cooldown, brush wipe/peck, and retraction_compensation.
 
-    Fixed critical TTC (Toolhead Collision) issues that could occur if:
+- Added (non-operational) logic for wipe_cold (cold wiping).
 
-        A Buffer Feed/Retract operation caused a re-grip in the Delivery module.
+## Ver 0.1.0280
 
-        A Swap operation (like T*) started before a Buffer Feed/Retract operation finished.
+- Separated Purge from Clean module. Purge now handles internal cleaning (hot/cold purging, pressure equalization). Clean handles external cleaning (brush wiping, tray knock-off).
 
-    Strategy: Simplified Buffer Feed to use basic Drive movement without re-gripping or filament fracture detection. Added wait steps (up to 15s) for previous Selector/Drive operations to finish before starting a Swap.
+- Purge module introduces adaptive purge length calculation based on material type and color differences using a matrix mapping system.
 
-Ver 0.1.0261 ~ 0.1.0262
+- Implemented different purge strategies for setups with/without a cutter and with/without a purge tray.
 
-    Enhanced MMS_Buffer to support mapping across multiple ViViD units, binding SLOTs and Buffers.
+- Enhanced brush_wipe with adaptive calculations, material-specific temperatures, droplet-drip steps, cold wiping, and multi-directional/pecking motions.
 
-    Added the MMS_BUFFER_MEASURE SLOT=n command for manual stroke calibration.
+- Implemented knock_off_blob action sequence for blob ejection from a purge tray.
 
-    Removed legacy Dripload process code and old buffer module files.
+## Ver 0.1.0271 ~ 0.1.0273
 
-    Fixed a bug where move_backward() in Buffer stroke measurement did not stop as expected when the Runout Pin was triggered.
+- Changed exception handling for Endstop Homing errors. Previously, MMS Stepper code caught all Exceptions, silently suppressing underlying CommandErrors from HomingMove. Now these CommandErrors are allowed to propagate.
 
-    Fixed a bug where purge would not abort and pause the print if an intermediate feed step failed, improving error handling in Clean/Swap workflows.
+- Introduced a DeliveryCommandError to wrap the original CommandError and stack trace for better debugging.
 
-Ver 0.1.0260
+- If MMS catches a CommandError, it now directly calls Printer.emergency_stop for a cleaner shutdown process.
 
-    Added an automatic Buffer Spring Stroke measurement and calibration feature that runs on the first T* operation after each boot.
+## Ver 0.1.0270
 
-    Renamed DriploadButton/Dripbutton to buffer_runout/runout to reflect its new role in the MMS_Buffer system. All related code and configuration references updated.
+- Enhanced status reporting for external UIs. Iterated on the MMS module's get_status(eventtime) function to integrate data via Klipper/Moonraker hooks.
 
-    Completely disabled the legacy Dripload functionality (both in config and code).
+- Consolidated and structured status returns from mms.slot_meta, mms_slot, mms_stepper, and mms_buffer objects for external consumption (primarily by KlipperScreen).
 
-    Note: Firmware Update Required. The C-level SoftStop() function was removed, making ManualMove operations un-interruptable again via MMS_STOP.
+## Ver 0.1.0263
 
-Ver 0.1.0256~0.1.0259
+- Fixed critical TTC (Toolhead Collision) issues that could occur if:
 
-    Conducted performance analysis on the Buffer Feed/Retract system, showing highly stable operation times.
+  - A Buffer Feed/Retract operation caused a re-grip in the Delivery module.
 
-    Removed the cmd_MMS_SWAP related commands.
+  - A Swap operation (like T*) started before a Buffer Feed/Retract operation finished.
 
-    Decoupled Clean-Purge logic from MMS_Buffer. Purge now has its own independent filament feeding logic, using a simpler synchronous, segmented approach based on the Buffer Spring stroke to prevent filament grinding.
+- Strategy: Simplified Buffer Feed to use basic Drive movement without re-gripping or filament fracture detection. Added wait steps (up to 15s) for previous Selector/Drive operations to finish before starting a Swap.
 
-    Enhanced Purge finish with a small, fast retract and a buffer state check to ensure safety.
+## Ver 0.1.0261 ~ 0.1.0262
 
-Ver 0.1.0253~0.1.0255
+- Enhanced MMS_Buffer to support mapping across multiple ViViD units, binding SLOTs and Buffers.
 
-    Fully migrated all Dripload functionality to the new MMS_Buffer system.
+- Added the MMS_BUFFER_MEASURE SLOT=n command for manual stroke calibration.
 
-    Updated handling for absolute_extrude setting and improved sensor state checks to prevent incorrect volume calculations.
+- Removed legacy Dripload process code and old buffer module files.
 
-    Improved Feed/Retract logic during printing, significantly reducing filament grinding incidents.
+- Fixed a bug where move_backward() in Buffer stroke measurement did not stop as expected when the Runout Pin was triggered.
 
-    Added speed-matching logic during Swap Purge phases to prevent over-compression.
+- Fixed a bug where purge would not abort and pause the print if an intermediate feed step failed, improving error handling in Clean/Swap workflows.
 
-    Updated configuration files: changed sensor logic to non-inverted and adjusted default purge distances.
+## Ver 0.1.0260
 
-Ver 0.1.0252
+- Added an automatic Buffer Spring Stroke measurement and calibration feature that runs on the first T* operation after each boot.
 
-    Added new commands: MMS_BUFFER_ACTIVATE and MMS_BUFFER_DEACTIVATE.
+- Renamed DriploadButton/Dripbutton to buffer_runout/runout to reflect its new role in the MMS_Buffer system. All related code and configuration references updated.
 
-    Fixed a major issue where long-distance retracts caused abnormal high-speed retract attempts. Switched to using the extruder's actual position instead of the virtual gcode_position for calculations.
+- Completely disabled the legacy Dripload functionality (both in config and code).
 
-    Added a step to force-load to the Outlet sensor at the end of the Charge operation to calibrate the MMS_Buffer's maximum volume.
+- Note: Firmware Update Required. The C-level SoftStop() function was removed, making ManualMove operations un-interruptable again via MMS_STOP.
 
-Ver 0.1.0251
+## Ver 0.1.0256~0.1.0259
 
-    Fixed a bug in mms_swap.relax_spring() related to inverted sensor logic. The function is now deprecated as the continuous retract strategy makes spring relaxation unnecessary.
+- Conducted performance analysis on the Buffer Feed/Retract system, showing highly stable operation times.
 
-    Continued refinement of the Neo Buffer's data acquisition, switching to use real-time extruder position data.
+- Removed the cmd_MMS_SWAP related commands.
 
-Ver 0.1.0250
+- Decoupled Clean-Purge logic from MMS_Buffer. Purge now has its own independent filament feeding logic, using a simpler synchronous, segmented approach based on the Buffer Spring stroke to prevent filament grinding.
 
-    Redesigned the Buffer Spring Feed system, moving away from a complex spring compression model towards a simpler capacity-based "Neo Buffer" concept.
+- Enhanced Purge finish with a small, fast retract and a buffer state check to ensure safety.
 
-    Replaced the producer-consumer queue model with a more straightforward Reactor/PeriodicTask mechanism to improve stability and reduce system load.
+## Ver 0.1.0253~0.1.0255
 
-Ver 0.1.0245
+- Fully migrated all Dripload functionality to the new MMS_Buffer system.
 
-    Officially implemented the Buffer Spring Feed feature.
+- Updated handling for absolute_extrude setting and improved sensor state checks to prevent incorrect volume calculations.
 
-    Introduces a monitoring strategy to calculate spring compression ratio in real-time using extruder motion data.
+- Improved Feed/Retract logic during printing, significantly reducing filament grinding incidents.
 
-    Dynamically calculates required feed distance, speed, and acceleration based on live extrusion flow rate to maintain optimal buffer state.
+- Added speed-matching logic during Swap Purge phases to prevent over-compression.
 
-    Implements a producer-consumer model with a task queue (FeedQueue) for managing feed requests.
+- Updated configuration files: changed sensor logic to non-inverted and adjusted default purge distances.
 
-    Includes safety mechanisms: checks Outlet state before feeding, limits individual feed distance, and clears queue on sensor triggers.
+## Ver 0.1.0252
 
-Ver 0.1.0242
+- Added new commands: MMS_BUFFER_ACTIVATE and MMS_BUFFER_DEACTIVATE.
 
-    Continued investigation and testing regarding Toolhead stuttering, focusing on soft_break() and underlying stepper communication.
+- Fixed a major issue where long-distance retracts caused abnormal high-speed retract attempts. Switched to using the extruder's actual position instead of the virtual gcode_position for calculations.
 
-    Enhanced Dripload startup checks: now verifies Outlet sensor state and Extruder action type (Extrude/Retract).
+- Added a step to force-load to the Outlet sensor at the end of the Charge operation to calibrate the MMS_Buffer's maximum volume.
 
-    Began design and development of a dynamic Buffer Spring Feed system based on real-time extrusion flow rate.
+## Ver 0.1.0251
 
-Ver 0.1.0241
+- Fixed a bug in mms_swap.relax_spring() related to inverted sensor logic. The function is now deprecated as the continuous retract strategy makes spring relaxation unnecessary.
 
-    Fixed an issue where MMS Toolhead and Extruder speeds were incorrectly scaled by the print speed/extrusion factor (M220).
+- Continued refinement of the Neo Buffer's data acquisition, switching to use real-time extruder position data.
 
-    Investigated and implemented fixes for occasional Toolhead stuttering observed during printing.
+## Ver 0.1.0250
 
-    Removed the restriction preventing Dripload activation during Purge operations.
+- Redesigned the Buffer Spring Feed system, moving away from a complex spring compression model towards a simpler capacity-based "Neo Buffer" concept.
 
-Ver 0.1.0240
+- Replaced the producer-consumer queue model with a more straightforward Reactor/PeriodicTask mechanism to improve stability and reduce system load.
 
-    Improved multi-stage unload logic in Swap to address occasional first-stage failure.
+## Ver 0.1.0245
 
-    Changed the relax_spring() method to unload until the Drip (PA4) sensor is released, instead of using extrusion.
+- Officially implemented the Buffer Spring Feed feature.
 
-    Adjusted the initial Extruder retract logic for the first unload stage.
+- Introduces a monitoring strategy to calculate spring compression ratio in real-time using extruder motion data.
 
-Ver 0.1.0234
+- Dynamically calculates required feed distance, speed, and acceleration based on live extrusion flow rate to maintain optimal buffer state.
 
-    Renamed service.py to task.py.
+- Implements a producer-consumer model with a task queue (FeedQueue) for managing feed requests.
 
-    Optimized Delivery logic to prevent repeated execution of safety retract under specific conditions.
+- Includes safety mechanisms: checks Outlet state before feeding, limits individual feed distance, and clears queue on sensor triggers.
 
-    Intercepted the RESUME command at the code level to ensure cached MMS commands are executed upon resuming, fixing issues caused by third-party config overrides.
+## Ver 0.1.0242
 
-Ver 0.1.0233
+- Continued investigation and testing regarding Toolhead stuttering, focusing on soft_break() and underlying stepper communication.
 
-    Fixed a potential issue with an incorrect print_time in Stepper enable(), resolving motor humming/failure to move.
+- Enhanced Dripload startup checks: now verifies Outlet sensor state and Extruder action type (Extrude/Retract).
 
-    Added handling for underlying MCU query exceptions in soft_stop().
+- Began design and development of a dynamic Buffer Spring Feed system based on real-time extrusion flow rate.
 
-    Consolidated idle-wait functions in the Delivery module.
+## Ver 0.1.0241
 
-    Removed the restriction that prevented Dripload from triggering during Pause.
+- Fixed an issue where MMS Toolhead and Extruder speeds were incorrectly scaled by the print speed/extrusion factor (M220).
 
-Ver 0.1.0232
+- Investigated and implemented fixes for occasional Toolhead stuttering observed during printing.
 
-    Adjusted config loading order; MMS_SLOT/MMS_EXTEND now uses delayed initialization.
+- Removed the restriction preventing Dripload activation during Purge operations.
 
-    Improved the Dripload distance calibration functionality.
+## Ver 0.1.0240
 
-    Fixed a bug where Dripload deactivated after Eject, causing unload failure.
+- Improved multi-stage unload logic in Swap to address occasional first-stage failure.
 
-    Disabled the Selector Swing function by default.
+- Changed the relax_spring() method to unload until the Drip (PA4) sensor is released, instead of using extrusion.
 
-Ver 0.1.0231
+- Adjusted the initial Extruder retract logic for the first unload stage.
 
-    Major Dripload Improvement: Introduced dynamic distance calculation and calibration, using statistical methods to optimize stopping distance and reduce damage from abrupt stops.
+## Ver 0.1.0234
 
-    Fixed a bug in the Adapter that occurred during config save & restart.
+- Renamed service.py to task.py.
 
-Ver 0.1.0230
+- Optimized Delivery logic to prevent repeated execution of safety retract under specific conditions.
 
-    Continued code structure adjustments, separating GlobalKlippy and management modules.
+- Intercepted the RESUME command at the code level to ensure cached MMS commands are executed upon resuming, fixing issues caused by third-party config overrides.
 
-    Changed the initialization methods for LED and Service-related modules.
+## Ver 0.1.0233
 
-Ver 0.1.0225
+- Fixed a potential issue with an incorrect print_time in Stepper enable(), resolving motor humming/failure to move.
 
-    Restructured the MMS module directory, organizing it into core, hardware, motion, etc.
+- Added handling for underlying MCU query exceptions in soft_stop().
 
-Ver 0.1.0224
+- Consolidated idle-wait functions in the Delivery module.
 
-    Cleaned up duplicate code in Adapters, standardized the use of lookup_object(), and purified business classes.
+- Removed the restriction that prevented Dripload from triggering during Pause.
 
-Ver 0.1.0223
+## Ver 0.1.0232
 
-    Implemented remaining core adapters (ForceMoveAdapter, StepperEnableAdapter, VirtualSDCardAdapter, etc.).
+- Adjusted config loading order; MMS_SLOT/MMS_EXTEND now uses delayed initialization.
 
-    Fully integrated the previous Assist and Observer mechanisms into the Adapter system.
+- Improved the Dripload distance calibration functionality.
 
-Ver 0.1.0222
+- Fixed a bug where Dripload deactivated after Eject, causing unload failure.
 
-    Fixed an issue in Adapters where the global Printer object was not updated correctly after a restart.
+- Disabled the Selector Swing function by default.
 
-    Implemented adapters like ExtruderAdapter, GCodeMoveAdapter, and NeopixelAdapter.
+## Ver 0.1.0231
 
-    Decoupled business classes from Klipper configuration dependencies.
+- Major Dripload Improvement: Introduced dynamic distance calculation and calibration, using statistical methods to optimize stopping distance and reduce damage from abrupt stops.
 
-Ver 0.1.0221
+- Fixed a bug in the Adapter that occurred during config save & restart.
 
-    Added the crucial PrinterAdapter for managing printer objects and events.
+## Ver 0.1.0230
 
-    Implemented GCodeAdapter and FanAdapter, updating related communication code.
+- Continued code structure adjustments, separating GlobalKlippy and management modules.
 
-    Cleaned up and removed obsolete utility functions.
+- Changed the initialization methods for LED and Service-related modules.
 
-Ver 0.1.0220
+## Ver 0.1.0225
 
-    Introduced the Adapters architecture to abstract interactions with Klipper modules.
+- Restructured the MMS module directory, organizing it into core, hardware, motion, etc.
 
-    Implemented ToolheadAdapter and migrated related logic from other modules.
+## Ver 0.1.0224
 
-Ver 0.1.0214
+- Cleaned up duplicate code in Adapters, standardized the use of lookup_object(), and purified business classes.
 
-    Refactored the Observer callback mechanism and added CallbackManager.
+## Ver 0.1.0223
 
-    Added a new Exceptions module to centralize and manage exceptions from various modules, enhancing exception linkage handling.
+- Implemented remaining core adapters (ForceMoveAdapter, StepperEnableAdapter, VirtualSDCardAdapter, etc.).
 
-    Added the MMS_LED_EFFECT_TRUNCATE command to clear all LED effects at once.
+- Fully integrated the previous Assist and Observer mechanisms into the Adapter system.
 
-    Added exception handling callbacks for Slots.
+## Ver 0.1.0222
 
-    Added LED effect reminders for failed Slot operations.
+- Fixed an issue in Adapters where the global Printer object was not updated correctly after a restart.
 
-    Added a safety retract function to Delivery, default 50mm.
+- Implemented adapters like ExtruderAdapter, GCodeMoveAdapter, and NeopixelAdapter.
 
-    Adjusted Autoload logic to accommodate the safety retract.
+- Decoupled business classes from Klipper configuration dependencies.
 
-Ver 0.1.0212
+## Ver 0.1.0221
 
-    Fixed variable naming issues in the Delivery module.
+- Added the crucial PrinterAdapter for managing printer objects and events.
 
-    Refactored the Observer module, splitting it into multiple independent observers and improving the state judgment mechanism.
+- Implemented GCodeAdapter and FanAdapter, updating related communication code.
 
-Ver 0.1.0211
+- Cleaned up and removed obsolete utility functions.
 
-    Added parameter validation to mms.get_slot().
+## Ver 0.1.0220
 
-    Optimized the Delivery process by adding wait steps to prevent operational conflicts.
+- Introduced the Adapters architecture to abstract interactions with Klipper modules.
 
-    Refactored and optimized the Selector Swing logic.
+- Implemented ToolheadAdapter and migrated related logic from other modules.
 
-Ver 0.1.0210
+## Ver 0.1.0214
 
-    Added Selector Swing Test feature, enabling Selector to swing during the unload phase (for testing only).
+- Refactored the Observer callback mechanism and added CallbackManager.
 
-    Supports dynamic adjustment of swing parameters via the MMS_D_TEST command.
+- Added a new Exceptions module to centralize and manage exceptions from various modules, enhancing exception linkage handling.
 
-Ver 0.1.0206
+- Added the MMS_LED_EFFECT_TRUNCATE command to clear all LED effects at once.
 
-    Changed the default Inlet configuration in mms-slot.cfg from mechanical switch to photoelectric switch.
+- Added exception handling callbacks for Slots.
 
-    Enhanced LED error handling; a configuration mismatch no longer prevents startup and alerts the user.
+- Added LED effect reminders for failed Slot operations.
 
-Ver 0.1.0205
+- Added a safety retract function to Delivery, default 50mm.
 
-    Standardized and cleaned up error log output formats.
+- Adjusted Autoload logic to accommodate the safety retract.
 
-    Fixed bugs in filament fracture detection; added automatic mms_load after resume to fill the gap between Gate and Outlet.
+## Ver 0.1.0212
 
-Ver 0.1.0203
+- Fixed variable naming issues in the Delivery module.
 
-    Added support for filament fracture detection in Advanced Dripload.
+- Refactored the Observer module, splitting it into multiple independent observers and improving the state judgment mechanism.
 
-    Made Semi-Autoload asynchronous and interruptible with MMS_STOP.
+## Ver 0.1.0211
 
-    Temporarily disables fracture detection during mms_pop to prevent false triggers.
+- Added parameter validation to mms.get_slot().
 
-    Improved Observer.is_printing() logic.
+- Optimized the Delivery process by adding wait steps to prevent operational conflicts.
 
-    Differentiated fracture handling between Swap/Charge and Dripload scenarios.
+- Refactored and optimized the Selector Swing logic.
 
-Ver 0.1.0202
+## Ver 0.1.0210
 
-    Implemented Filament Fracture Detection based on the Inlet sensor during HomingMove loading/unloading.
+- Added Selector Swing Test feature, enabling Selector to swing during the unload phase (for testing only).
 
-Ver 0.1.0201
+- Supports dynamic adjustment of swing parameters via the MMS_D_TEST command.
 
-    Replaced stepper.pause() with completion.wait() in MoveDispatch.
+## Ver 0.1.0206
 
-    Changed Button trigger/release callbacks to a FIFO deque.
+- Changed the default Inlet configuration in mms-slot.cfg from mechanical switch to photoelectric switch.
 
-    Enhanced SLOT callback control using context managers.
+- Enhanced LED error handling; a configuration mismatch no longer prevents startup and alerts the user.
 
-Ver 0.1.0200
+## Ver 0.1.0205
 
-    Implemented Advanced Dripload, triggered by PA4 and stopped by PA5.
+- Standardized and cleaned up error log output formats.
 
-    Fixed a bug in semi_load_to_gate parameters that prevented Semi-Autoload from working correctly.
+- Fixed bugs in filament fracture detection; added automatic mms_load after resume to fill the gap between Gate and Outlet.
 
-Ver 0.1.0196
+## Ver 0.1.0203
 
-    Encapsulated motor control logic in MMSStepper and ManualMoveDispatch classes for asynchronous, interruptible movement termination.
+- Added support for filament fracture detection in Advanced Dripload.
 
-    Note: High-frequency termination may cause stepcompress errors; use is limited to low-frequency scenarios like Advanced Dripload.
+- Made Semi-Autoload asynchronous and interruptible with MMS_STOP.
 
-Ver 0.1.0195 (Note: Labeled for Beta Testing; actual code corresponds to Ver 0.1.0196)
+- Temporarily disables fracture detection during mms_pop to prevent false triggers.
 
-    Implemented Stepper Soft Stop in C (command_stepper_soft_stop()), requiring a firmware re-flash for ViViD.
+- Improved Observer.is_printing() logic.
 
-    Changed fan control logic in Swap/Clean/Cut modules; only mms_clean controls fans during Purge.
+- Differentiated fracture handling between Swap/Charge and Dripload scenarios.
 
-Ver 0.1.0192
+## Ver 0.1.0202
 
-    Added monitoring for the Dripload Pin in MMS_STATUS and updated log messages.
+- Implemented Filament Fracture Detection based on the Inlet sensor during HomingMove loading/unloading.
 
-Ver 0.1.0191
+## Ver 0.1.0201
 
-    Restored Autoload interruption and RFID Detect interruption features based on the new motor stopping logic.
+- Replaced stepper.pause() with completion.wait() in MoveDispatch.
 
-    Restored the MMS_STOP/MMS999 command functionality.
+- Changed Button trigger/release callbacks to a FIFO deque.
 
-Ver 0.1.0190
+- Enhanced SLOT callback control using context managers.
 
-    Implemented Trsync Break Homing, enabling emergency stops for HomingMove operations (e.g., for filament fracture detection).
+## Ver 0.1.0200
 
-Ver 0.1.0184
+- Implemented Advanced Dripload, triggered by PA4 and stopped by PA5.
 
-    Fixed a bug where a failed Swap Pause could cause recursive PAUSE calls and incorrect task state flags.
+- Fixed a bug in semi_load_to_gate parameters that prevented Semi-Autoload from working correctly.
 
-    Fixed a compilation error in sensor_ads1220.c after merging from upstream.
+## Ver 0.1.0196
 
-Ver 0.1.0183
+- Encapsulated motor control logic in MMSStepper and ManualMoveDispatch classes for asynchronous, interruptible movement termination.
 
-    Adjusted configuration: changed single Dripload distance from 15mm to 10mm.
+- Note: High-frequency termination may cause stepcompress errors; use is limited to low-frequency scenarios like Advanced Dripload.
 
-    Began prototyping filament fracture detection.
+## Ver 0.1.0195
 
-Ver 0.1.0182
+- Implemented Stepper Soft Stop in C (command_stepper_soft_stop()), requiring a firmware re-flash for ViViD.
 
-    Minor refactoring of the Delivery module, reducing redundant code in selection/delivery functions.
+- Changed fan control logic in Swap/Clean/Cut modules; only mms_clean controls fans during Purge.
 
-Ver 0.1.0181
+## Ver 0.1.0192
 
-    Fixed a bug in Selector where the focus wasn't updated after selection, which could cause get_current_slot to misjudge.
+- Added monitoring for the Dripload Pin in MMS_STATUS and updated log messages.
 
-Ver 0.1.0180
+## Ver 0.1.0191
 
-    Merged upstream Klipper Master updates (commit 3ef760c).
+- Restored Autoload interruption and RFID Detect interruption features based on the new motor stopping logic.
 
-Ver 0.1.0173
+- Restored the MMS_STOP/MMS999 command functionality.
 
-    Introduced Extend functionality, enabling support for multiple ViViD units for multi-color printing.
+## Ver 0.1.0190
 
-    Changed the RESUME macro override method for better reliability.
+- Implemented Trsync Break Homing, enabling emergency stops for HomingMove operations (e.g., for filament fracture detection).
 
-Ver 0.1.0160
+## Ver 0.1.0184
 
-    Refactored the Stepper module, consolidating motion scheduling logic. Merged MOVE/MOVE_TO/MOVE_UNTIL into a DRIP_MOVE type.
+- Fixed a bug where a failed Swap Pause could cause recursive PAUSE calls and incorrect task state flags.
 
-    Added automatic MMS_EJECT at the end of a print.
+- Fixed a compilation error in sensor_ads1220.c after merging from upstream.
 
-    Changed the gear_ratio for the drive stepper in the sample configuration.
+## Ver 0.1.0183
 
-Ver 0.1.0155
+- Adjusted configuration: changed single Dripload distance from 15mm to 10mm.
 
-    Minor refactoring of EJECT, CHARGE, and SWAP logic.
+- Began prototyping filament fracture detection.
 
-    Fixed a bug where MMS_CHARGE did not stop after a load failure.
+## Ver 0.1.0182
 
-    Added automatic MMS_EJECT at the end of a print (complete/error/cancelled).
+- Minor refactoring of the Delivery module, reducing redundant code in selection/delivery functions.
 
-Ver 0.1.0152
+## Ver 0.1.0181
 
-    Changed Drive scheduling in _deliver_distance() from move() to manual_move().
+- Fixed a bug in Selector where the focus wasn't updated after selection, which could cause get_current_slot to misjudge.
 
-    Minor refactoring of EJECT and SWAP logic.
+## Ver 0.1.0180
 
-Ver 0.1.0150
+- Merged upstream Klipper Master updates (commit 3ef760c).
 
-    Added Semi-Autoload feature with the MMS_SEMI_AUTOLOAD command.
+## Ver 0.1.0173
 
-    Added the ability to pass movement distance as an external parameter in Delivery.
+- Introduced Extend functionality, enabling support for multiple ViViD units for multi-color printing.
 
-Ver 0.1.0143
+- Changed the RESUME macro override method for better reliability.
 
-    Changed Gear (now Drive) Stepper to use Klipper's native manual_home for sensor-triggered moves, reducing delay and filament crushing.
+## Ver 0.1.0160
 
-    Changed the Outlet sensor pin to buffer:PA5 (closer to the physical limit).
+- Refactored the Stepper module, consolidating motion scheduling logic. Merged MOVE/MOVE_TO/MOVE_UNTIL into a DRIP_MOVE type.
 
-    Decoupled the Dripload monitor pin from the Outlet, using a dedicated pin (e.g., !buffer:PA4).
+- Added automatic MMS_EJECT at the end of a print.
 
-    Updated naming conventions: Buffer sensor -> Gate, Gear stepper -> Drive stepper.
+- Changed the gear_ratio for the drive stepper in the sample configuration.
 
-Ver 0.1.0111
+## Ver 0.1.0155
 
-    Fixed a bug where the Entry sensor trigger did not stop the MMS_LOAD command.
+- Minor refactoring of EJECT, CHARGE, and SWAP logic.
 
-    Fixed an initialization error where mms_selector was referenced before being ready in get_status.
+- Fixed a bug where MMS_CHARGE did not stop after a load failure.
 
-Ver 0.1.0110
+- Added automatic MMS_EJECT at the end of a print (complete/error/cancelled).
 
-    Major refactoring of the SLOT module, decoupling Pin state management, LED control, Autoload, and RFID logic.
+## Ver 0.1.0152
 
-    Added optional support for an Entry Sensor; loading logic prioritizes Entry over Outlet if configured.
+- Changed Drive scheduling in _deliver_distance() from move() to manual_move().
 
-    Added Pause/Resume Swap recovery: resumes will retry the last swap command if printing was paused during a swap.
+- Minor refactoring of EJECT and SWAP logic.
 
-    Removed the restriction on Deliver operations (e.g., MMS_LOAD, MMS_MOVE) while printing is paused.
+## Ver 0.1.0150
 
+- Added Semi-Autoload feature with the MMS_SEMI_AUTOLOAD command.
+
+- Added the ability to pass movement distance as an external parameter in Delivery.
+
+## Ver 0.1.0143
+
+- Changed Gear (now Drive) Stepper to use Klipper's native manual_home for sensor-triggered moves, reducing delay and filament crushing.
+
+- Changed the Outlet sensor pin to buffer:PA5 (closer to the physical limit).
+
+- Decoupled the Dripload monitor pin from the Outlet, using a dedicated pin (e.g., !buffer:PA4).
+
+- Updated naming conventions: Buffer sensor -> Gate, Gear stepper -> Drive stepper.
+
+## Ver 0.1.0111
+
+- Fixed a bug where the Entry sensor trigger did not stop the MMS_LOAD command.
+
+- Fixed an initialization error where mms_selector was referenced before being ready in get_status.
+
+## Ver 0.1.0110
+
+- Major refactoring of the SLOT module, decoupling Pin state management, LED control, Autoload, and RFID logic.
+
+- Added optional support for an Entry Sensor; loading logic prioritizes Entry over Outlet if configured.
+
+- Added Pause/Resume Swap recovery: resumes will retry the last swap command if printing was paused during a swap.
+
+- Removed the restriction on Deliver operations (e.g., MMS_LOAD, MMS_MOVE) while printing is paused.
