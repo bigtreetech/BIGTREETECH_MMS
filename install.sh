@@ -1,6 +1,6 @@
 #!/bin/bash
 
-KLIPPY_VERSION=0.1.0377 # Important: Keep synced with 'klippy/extras/mms/mms.py'
+KLIPPY_VERSION=0.1.0380 # Important: Keep synced with 'klippy/extras/mms/mms.py'
 KLIPPER_SCREEN_VERSION=0.2.0010 # Important: Keep synced with 'KlipperScreen/vivid/installer.py'
 
 SCRIPTNAME="$0"
@@ -65,7 +65,7 @@ g_log_en=1
 # The oldest version supported
 klipper_oldest_id="938300f3c3cc25448c499a3a8ca5b47b7a6d4fa8"
 # The latest version supported. usually is the latest version of the upstream
-klipper_latest_id="1fc9d81095a647401521d3e94bf34e8d4d3a363f"
+klipper_latest_id="2bd0acb6ca4d75e7035c20465a8f36d5e42e2b65"
 # Klipper supports AHT30 and no longer requires patching after this commit
 aht30_patch_id="1f43be0b8b55d90753578d06ac06356d1ab9a768"
 # The oldest version supported

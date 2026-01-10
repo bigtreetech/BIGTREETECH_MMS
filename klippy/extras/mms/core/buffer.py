@@ -125,7 +125,6 @@ class Buffer:
 
     def _handle_klippy_ready(self):
         self._initialize_mms()
-        self._initialize_gcode()
         self._initialize_loggers()
         self._initialize_task()
         self._is_ready = True
@@ -134,18 +133,6 @@ class Buffer:
         self.mms = printer_adapter.get_mms()
         self.mms_delivery = printer_adapter.get_mms_delivery()
         self.mms_filament_fracture = self.mms.get_mms_filament_fracture()
-
-    def _initialize_gcode(self):
-        commands = [
-            ("MMS_BUFFER_ACTIVATE", self.cmd_MMS_BUFFER_ACTIVATE),
-            ("MMS_BUFFER_DEACTIVATE", self.cmd_MMS_BUFFER_DEACTIVATE),
-            ("MMS_BUFFER_MEASURE", self.cmd_MMS_BUFFER_MEASURE),
-
-            ("MMS_BUFFER_FILL", self.cmd_MMS_BUFFER_FILL),
-            ("MMS_BUFFER_CLEAR", self.cmd_MMS_BUFFER_CLEAR),
-            ("MMS_BUFFER_HALFWAY", self.cmd_MMS_BUFFER_HALFWAY),
-        ]
-        gcode_adapter.bulk_register(commands)
 
     def _initialize_loggers(self):
         mms_logger = printer_adapter.get_mms_logger()
@@ -171,6 +158,9 @@ class Buffer:
             if mms_slot.gate.is_triggered():
                 return True
         return False
+
+    def has_slot(self, slot_num):
+        return slot_num in self._binding_slot_nums
 
     # ---- Monitor ----
     def _monitor(self):
@@ -669,12 +659,67 @@ class Buffer:
             "monitor_period" : self.monitor_period,
         }
 
-    # ---- GCode command ----
+    def stroke_is_measured(self):
+        return self._stroke_is_measured
+
+
+class BufferCommand:
+    def __init__(self):
+        printer_adapter.register_klippy_ready(
+            self._handle_klippy_ready)
+
+    def _handle_klippy_ready(self):
+        self._initialize_mms()
+        self._initialize_gcode()
+        self._initialize_loggers()
+
+    def _initialize_mms(self):
+        self.mms = printer_adapter.get_mms()
+
+    def _initialize_gcode(self):
+        commands = [
+            ("MMS_BUFFER_ACTIVATE", self.cmd_MMS_BUFFER_ACTIVATE),
+            ("MMS_BUFFER_DEACTIVATE", self.cmd_MMS_BUFFER_DEACTIVATE),
+            ("MMS_BUFFER_MEASURE", self.cmd_MMS_BUFFER_MEASURE),
+
+            ("MMS_BUFFER_FILL", self.cmd_MMS_BUFFER_FILL),
+            ("MMS_BUFFER_CLEAR", self.cmd_MMS_BUFFER_CLEAR),
+            ("MMS_BUFFER_HALFWAY", self.cmd_MMS_BUFFER_HALFWAY),
+        ]
+        gcode_adapter.bulk_register(commands)
+
+    def _initialize_loggers(self):
+        mms_logger = printer_adapter.get_mms_logger()
+        self.log_info = mms_logger.create_log_info(console_output=True)
+        self.log_warning = mms_logger.create_log_warning(console_output=True)
+
+    def find_mms_buffer(self, extend_num):
+        mms_extend = self.mms.get_mms_extend(extend_num)
+        if mms_extend:
+            return mms_extend.get_mms_buffer()
+
+        mms_buffers = self.mms.get_mms_buffers()
+        if mms_buffers:
+            return mms_buffers[0]
+
+        return None
+
+    # ---- GCode commands ----
     def cmd_MMS_BUFFER_ACTIVATE(self, gcmd):
-        self.activate_monitor()
+        extend_num = gcmd.get_int("EXTEND", minval=0, default=0)
+        mms_buffer = self.find_mms_buffer(extend_num)
+        if not mms_buffer:
+            return
+
+        mms_buffer.activate_monitor()
 
     def cmd_MMS_BUFFER_DEACTIVATE(self, gcmd):
-        self.deactivate_monitor()
+        extend_num = gcmd.get_int("EXTEND", minval=0, default=0)
+        mms_buffer = self.find_mms_buffer(extend_num)
+        if not mms_buffer:
+            return
+
+        mms_buffer.deactivate_monitor()
 
     def cmd_MMS_BUFFER_MEASURE(self, gcmd):
         slot_num = gcmd.get_int("SLOT", minval=0)
@@ -683,15 +728,26 @@ class Buffer:
         if not self.mms.slot_is_available(slot_num):
             return
 
-        if self._stroke_is_measured:
+        extend_num = gcmd.get_int("EXTEND", minval=0, default=0)
+        mms_buffer = self.find_mms_buffer(extend_num)
+        if not mms_buffer:
+            self.log_warning("MMS Buffer not found")
+            return
+        if not mms_buffer.has_slot(slot_num):
+            self.log_warning(
+                f"slot[{slot_num}] is not belong to target MMS Buffer"
+            )
+            return
+
+        if mms_buffer.stroke_is_measured():
             self.log_info(
                 f"slot[{slot_num}] buffer spring stroke: "
-                f"{self.spring_stroke} mm"
+                f"{mms_buffer.get_spring_stroke()} mm"
             )
             if not force:
                 return
 
-        self.measure_stroke(slot_num, force=True)
+        mms_buffer.measure_stroke(slot_num, force=True)
 
     def cmd_MMS_BUFFER_FILL(self, gcmd):
         slot_num = gcmd.get_int("SLOT", minval=0)
@@ -699,7 +755,19 @@ class Buffer:
         accel = gcmd.get_float("ACCEL", default=None, minval=0.)
         if not self.mms.slot_is_available(slot_num):
             return
-        self.fill(slot_num, speed, accel)
+
+        extend_num = gcmd.get_int("EXTEND", minval=0, default=0)
+        mms_buffer = self.find_mms_buffer(extend_num)
+        if not mms_buffer:
+            self.log_warning("MMS Buffer not found")
+            return
+        if not mms_buffer.has_slot(slot_num):
+            self.log_warning(
+                f"slot[{slot_num}] is not belong to target MMS Buffer"
+            )
+            return
+
+        mms_buffer.fill(slot_num, speed, accel)
 
     def cmd_MMS_BUFFER_CLEAR(self, gcmd):
         slot_num = gcmd.get_int("SLOT", minval=0)
@@ -707,7 +775,19 @@ class Buffer:
         accel = gcmd.get_float("ACCEL", default=None, minval=0.)
         if not self.mms.slot_is_available(slot_num):
             return
-        self.clear(slot_num, speed, accel)
+
+        extend_num = gcmd.get_int("EXTEND", minval=0, default=0)
+        mms_buffer = self.find_mms_buffer(extend_num)
+        if not mms_buffer:
+            self.log_warning("MMS Buffer not found")
+            return
+        if not mms_buffer.has_slot(slot_num):
+            self.log_warning(
+                f"slot[{slot_num}] is not belong to target MMS Buffer"
+            )
+            return
+
+        mms_buffer.clear(slot_num, speed, accel)
 
     def cmd_MMS_BUFFER_HALFWAY(self, gcmd):
         slot_num = gcmd.get_int("SLOT", minval=0)
@@ -715,4 +795,16 @@ class Buffer:
         accel = gcmd.get_float("ACCEL", default=None, minval=0.)
         if not self.mms.slot_is_available(slot_num):
             return
-        self.halfway(slot_num, speed, accel)
+
+        extend_num = gcmd.get_int("EXTEND", minval=0, default=0)
+        mms_buffer = self.find_mms_buffer(extend_num)
+        if not mms_buffer:
+            self.log_warning("MMS Buffer not found")
+            return
+        if not mms_buffer.has_slot(slot_num):
+            self.log_warning(
+                f"slot[{slot_num}] is not belong to target MMS Buffer"
+            )
+            return
+
+        mms_buffer.halfway(slot_num, speed, accel)

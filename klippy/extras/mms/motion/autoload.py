@@ -88,6 +88,12 @@ class MMSAutoload:
     def is_in_progress(self):
         return self._in_progress
 
+    # ---- Common func ----
+    def _get_selecting_slot(self, slot_num):
+        mms_slot = self.mms.get_mms_slot(slot_num)
+        mms_selector = mms_slot.get_mms_selector()
+        return mms_selector.get_focus_slot()
+
     # ---- Autoload ----
     def is_enabled(self):
         return self._enable
@@ -213,16 +219,8 @@ class MMSAutoload:
 
     def _run(self, mms_slot):
         slot_num = mms_slot.get_num()
-
         with self._execution(slot_num):
-            self._unload_other_slots(slot_num)
-
-            if self._should_break:
-                return
-
-            with mms_slot.slot_rfid.execute():
-                if mms_slot.inlet.is_triggered():
-                    self.mms_delivery.mms_prepare(slot_num)
+            self._mms_autoload(slot_num)
 
     def _unload_other_slots(self, slot_num):
         try:
@@ -230,6 +228,32 @@ class MMSAutoload:
         except Exception as e:
             self.log_error(
                 f"slot[{slot_num}] autoload unload other slots error: {e}")
+
+    def _mms_autoload(self, slot_num):
+        # self._unload_other_slots(slot_num)
+        if self._should_break:
+            return
+
+        mms_slot = self.mms.get_mms_slot(slot_num)
+        with mms_slot.slot_rfid.execute():
+            if mms_slot.inlet.is_triggered():
+                # self.mms_delivery.mms_prepare(slot_num)
+                selecting_slot = self._get_selecting_slot(slot_num)
+
+                try:
+                    if selecting_slot != slot_num:
+                        self.mms_delivery.select_slot(slot_num)
+
+                    self.mms_delivery.load_to_gate(slot_num)
+                    self.mms_delivery.unload_to_gate(slot_num)
+
+                    if selecting_slot != slot_num:
+                        self.mms_delivery.select_slot(selecting_slot)
+
+                except DeliveryTerminateSignal:
+                    self.log_info(f"slot[{slot_num}] autoload terminated")
+                except Exception as e:
+                    self.log_error(f"slot[{slot_num}] autoload error: {e}")
 
     # ---- Pre-load ----
     def _can_pre_load(self):
@@ -247,10 +271,18 @@ class MMSAutoload:
         return True
 
     def mms_pre_load(self, slot_num):
+        selecting_slot = self._get_selecting_slot(slot_num)
+
         try:
-            self.mms_delivery.select_slot(slot_num)
+            if selecting_slot != slot_num:
+                self.mms_delivery.select_slot(slot_num)
+
             self.mms_delivery.pre_load_to_gate(slot_num)
             self.mms_delivery.unload_to_gate(slot_num)
+
+            if selecting_slot != slot_num:
+                self.mms_delivery.select_slot(selecting_slot)
+
         except DeliveryTerminateSignal:
             self.log_info(f"slot[{slot_num}] pre_load terminated")
         except Exception as e:
@@ -263,7 +295,6 @@ class MMSAutoload:
         slot_num = gcmd.get_int("SLOT", minval=0)
         if not self.mms.slot_is_available(slot_num):
             return
-
         if not self._can_pre_load():
             return
 

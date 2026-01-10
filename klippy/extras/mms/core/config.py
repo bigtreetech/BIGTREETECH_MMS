@@ -1,6 +1,6 @@
 # Support for MMS Configuration
 #
-# Copyright (C) 2025 Garvey Ding <garveyding@gmail.com>
+# Copyright (C) 2025-2026 Garvey Ding <garveyding@gmail.com>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 
@@ -41,7 +41,11 @@ class PrinterConfig:
             list: lambda config, name: config.getintlist(name),
             # Optional
             OptionalField: lambda config, name: OptionalField.parse(
-                config, name),
+                config, name
+            ),
+            OptionalPoint: lambda config, name: OptionalPoint.parse(
+                config, name
+            ),
             # Custom type
             PointType: lambda config, name: PointType.parse(config.get(name)),
             PointsType: lambda config, name: PointsType.parse(config.get(name)),
@@ -124,3 +128,15 @@ class StringList:
         val_string = val_string or ""
         lst = [val.strip() for val in val_string.split(",")]
         return lst
+
+
+class OptionalPoint:
+    @staticmethod
+    def parse(config, name):
+        """
+        Always get()
+        """
+        point_string = config.get(name, None)
+        if not point_string:
+            return point_string
+        return PointType.parse(point_string)

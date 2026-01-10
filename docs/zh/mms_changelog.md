@@ -1,5 +1,27 @@
 # MMS 更新日志
 
+## Ver 0.1.0380
+
+- 优化 Klipper shutdown 时 MMS last_breath 的日志输出格式。
+
+- Autoload/Preload：调整流程
+
+- Extend + MMS Buffer：当扩展（Extend）ViViD配置接入MMS时，MMS会生成并管理多个MMS缓冲器（mms_buffer），导致缓冲器相关GCode命令重复注册，引发Klipper报错并关机；修复以上错误，为 MMS Buffer 相关命令新增可选参数“EXTEND”（整数类型，默认值0），该扩展编号（Extend Num）对应mms-extend.cfg中配置的编号（如[mms extend 2]中的“2”），支持用户动态配置（例：控制扩展编号为2的缓冲器，可执行命令MMS_BUFFER_MEASURE EXTEND=2 SLOT=4）；新增槽位编号（slot_num）归属校验（例：若[mms extend 2]配置slot: 4,5,6,7，则执行MMS_BUFFER_MEASURE EXTEND=2 SLOT=3会报错并返回）。
+
+## Ver 0.1.0379
+
+- 断料检测（Filament Fracture）：执行归零期间断料处理备选逻辑（handle_while_homing_alter）测试；需求方要求重新梳理断料检测相关逻辑，暂停使用handle_while_homing_alter，回滚至常规的回零期间断料处理逻辑（handle_while_homing）。
+
+- Purge：当前用户使用弩式切刀（Crossbow）完成切割后，停靠至托盘（Tray）过程中，现有设计为先沿Y轴再沿X轴移动，易引发撞切刀问题；优化运动方向可选配置（默认Y轴优先，通过参数axis_first: Y控制），支持用户调整为X轴优先移动；可通过修改电机移动方向配置解决该问题，支持通过专用配置变量调整弩式切刀（Crossbow cutter）的轴移动顺序，指定X轴先于Y轴移动，修复因硬编码Y轴优先移动逻辑导致的切割后刀头全速撞回切刀的问题；提供mms-purge.cfg中的推荐配置 `axis_first:  X`， 从托盘点（tray_point）开始的轴移动顺序，可选值：'X'（X轴优先）、'Y'（Y轴优先）、'XY'（同步移动）。
+
+## Ver 0.1.0378
+
+- Config：新增可选点（OptionalPoint）；支持 Purge eject_point 这类可选（X,Y）坐标点配置。
+
+- Purge-Tray Eject：将弹出点（eject_point）改为可选配置；启用该配置时，清洗（mms_purge）完成后执行托盘弹出（tray_eject），可执行命令MMS_TRAY_EJECT；未配置或注释该配置项时，不执行托盘弹出（tray_eject），不可执行命令MMS_TRAY_EJECT；配置文件mms-purge.cfg中的弹出点（eject_point）默认处于注释禁用状态。
+
+- Charge：新增 charge 成功的 slot_num 记录功能；打印结束后自动执行 teardown 操作。
+
 ## 0.1.0377
 
 - Careful Charge 测试调整。

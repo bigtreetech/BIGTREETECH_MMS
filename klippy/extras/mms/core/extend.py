@@ -64,6 +64,7 @@ class MMSExtend:
     def __init__(self, config):
         self.name = config.get_name()
         self.num = int(self.name.split()[-1])
+        self.mms_buffer = None
 
         self.extend_config = ExtendConfig(config)
 
@@ -99,6 +100,15 @@ class MMSExtend:
             for slot_num in self.get_slot_nums()
         ]
         return mms_slots
+
+    def set_mms_buffer(self, mms_buffer):
+        self.mms_buffer = mms_buffer
+
+    def get_mms_buffer(self):
+        return self.mms_buffer
+
+    # def has_slot(self, slot_num):
+    #     return slot_num in self.get_slot_nums()
 
 
 def load_config(config):

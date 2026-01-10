@@ -1,6 +1,6 @@
 # Support for MMS
 #
-# Copyright (C) 2024-2025 Garvey Ding <garveyding@gmail.com>
+# Copyright (C) 2024-2026 Garvey Ding <garveyding@gmail.com>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 
@@ -12,7 +12,7 @@ from .adapters import (
     printer_adapter,
     toolhead_adapter
 )
-from .core.buffer import Buffer
+from .core.buffer import Buffer, BufferCommand
 from .core.config import (
     OptionalField,
     PrinterConfig,
@@ -35,7 +35,7 @@ from .motion.resume import MMSResume
 @dataclass(frozen=True)
 class MMSConfig:
     # Current version
-    version: str = "0.1.0377"
+    version: str = "0.1.0380"
     # Welcome for MMS initail
     welcome: str = "*"*10 + f" MMS Ver {version} Ready for Action! " + "*"*10
 
@@ -171,6 +171,9 @@ class MMS:
         # Init periodic service for MMS
         self.periodic_task_sp = PeriodicTask()
 
+        # MMS Buffer command manager
+        self.buffer_command = BufferCommand()
+
     def _parse_mms_buffer(self, slot_num_lst):
         mms_buffer = Buffer()
         for slot_num in slot_num_lst:
@@ -178,6 +181,7 @@ class MMS:
 
         self.mms_buffers.append(mms_buffer)
         mms_buffer.set_index(len(self.mms_buffers)-1)
+        return mms_buffer
 
     def _parse_outlet(self, mcu_pin, slot_num_lst):
         outlet = MMSButtonOutlet(mcu_pin)
@@ -296,9 +300,10 @@ class MMS:
                 self.mms_slots.append(mms_slot)
 
         # Extend MMS Buffer
-        self._parse_mms_buffer(
+        mms_buffer = self._parse_mms_buffer(
             extend_slot_num_lst
         )
+        mms_extend.set_mms_buffer(mms_buffer)
         # Extend SLOT Outlet
         self._parse_outlet(
             mms_extend.get_outlet_pin(),
@@ -380,6 +385,11 @@ class MMS:
         self.print_observer.register_finish_callback(
             self.mms_eject.mms_eject)
 
+        # Register Charge teardown for Print finish
+        self.mms_charge = printer_adapter.get_mms_charge()
+        self.print_observer.register_finish_callback(
+            self.mms_charge.teardown)
+
         # Init mms_swap
         self.mms_swap = printer_adapter.get_mms_swap()
 
@@ -387,28 +397,52 @@ class MMS:
         self.log_info(self.mms_config.welcome)
 
     def _last_breath(self):
-        self.log_info_s(f"MMS Version: {self.mms_config.version}")
+        # self.log_info_s(f"MMS Version: {self.mms_config.version}")
 
+        def _format(data):
+            return json.dumps(data, indent=4)
+
+        # Log pins and steppers
         if self.mms_selectors and self.mms_drives:
             self.log_status(silent=True)
 
+        if self.mms_buffers:
+            buffers_status = {
+                b.get_index():b.get_status() for b in self.mms_buffers
+            }
+            self.log_info_s("MMS Buffers:\n" + _format(buffers_status))
+
         if self.mms_selectors:
-            self.log_info_s(
-                "MMS Selector MCU_Stepper: "
-                f"{[s.get_mcu_stepper_status() for s in self.mms_selectors]}")
+            msg = ""
+            for s in self.mms_selectors:
+                msg += _format(s.get_mcu_stepper_status())
+                msg += "\n"
+            self.log_info_s("MMS Selector MCU_Stepper:\n" + msg)
+            # self.log_info_s(
+            #     "MMS Selector MCU_Stepper:\n"
+            #     f"{[s.get_mcu_stepper_status() for s in self.mms_selectors]}"
+            # )
 
         if self.mms_drives:
-            self.log_info_s(
-                "MMS Drive MCU_Stepper: "
-                f"{[s.get_mcu_stepper_status() for s in self.mms_drives]}")
+            msg = ""
+            for s in self.mms_drives:
+                msg += _format(s.get_mcu_stepper_status())
+                msg += "\n"
+            self.log_info_s("MMS Drive MCU_Stepper:\n" + msg)
+            #     f"{[s.get_mcu_stepper_status() for s in self.mms_drives]}"
+            # )
 
         if self.mms_swap:
-            self.log_info_s(f"MMS Swap: {self.mms_swap.get_status()}")
+            self.log_info_s(
+                "MMS Swap:\n" + _format(self.mms_swap.get_status())
+            )
 
-        # Stop observer
         if self.print_observer:
             self.log_info_s(
-                f"Print Observer: {self.print_observer.get_status()}")
+                "MMS Print Observer:\n" + \
+                _format(self.print_observer.get_status())
+            )
+            # Stop observer
             self.print_observer.stop()
 
         toolhead_adapter.log_snapshot()
@@ -495,6 +529,12 @@ class MMS:
 
     def get_buffer_runout(self, slot_num):
         return self.get_meta(slot_num).get(self.pin_type.buffer_runout, None)
+
+    def get_mms_extend(self, extend_num):
+        for mms_extend in self.mms_extends:
+            if mms_extend.get_num() == extend_num:
+                return mms_extend
+        return None
 
     # -- Get slot_num --
     def get_slot_nums(self):
@@ -985,6 +1025,15 @@ class MMS:
         mms_slot.slot_rfid.rfid_truncate()
 
     def cmd_MMS_TEST(self, gcmd):
+        mcu = self.mms_selectors[0].get_mcu()
+        mcu_name = mcu._name
+        mcu_rm = mcu._conn_helper._restart_helper._restart_method
+        self.log_info("\n"
+           "mcu name:\n"
+           f"{mcu_name}\n"
+           "mcu restart_method:\n"
+           f"{mcu_rm}\n"
+        )
         return
 
 

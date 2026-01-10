@@ -1,6 +1,6 @@
 # Support for MMS Charge
 #
-# Copyright (C) 2024-2025 Garvey Ding <garveyding@gmail.com>
+# Copyright (C) 2024-2026 Garvey Ding <garveyding@gmail.com>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 
@@ -70,6 +70,7 @@ class MMSCharge:
 
         # State tracking
         self._is_running = False
+        self._charging_slot_num = None
         # Task state
         # self._task_end = False
         # self._task_success = False
@@ -116,6 +117,13 @@ class MMSCharge:
             yield
         finally:
             self._is_running = False
+
+    def get_charging_slot(self):
+        return self._charging_slot_num
+
+    def teardown(self):
+        self._is_running = False
+        self._charging_slot_num = None
 
     # ---- Control ----
     def pause(self, period_seconds):
@@ -309,7 +317,7 @@ class MMSCharge:
         mms_buffer = mms_slot.get_mms_buffer()
         if not mms_buffer.clear(slot_num):
             raise ChargeFailedError(
-                f"{log_prefix} halfway buffer failed", mms_slot
+                f"{log_prefix} clear buffer failed", mms_slot
             )
 
         # Calculate the total distance should be careful deliver
@@ -457,6 +465,7 @@ class MMSCharge:
                 self.log_error(f"{log_prefix} error: {e}")
                 return False
 
+        self._charging_slot_num = slot_num
         self.log_info_s(f"{log_prefix} finish")
         self._exec_custom_macro(self.custom_after, "after")
         return True

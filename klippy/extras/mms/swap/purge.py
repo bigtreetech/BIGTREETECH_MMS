@@ -1,6 +1,6 @@
 # Support for MMS Purge
 #
-# Copyright (C) 2025 Garvey Ding <garveyding@gmail.com>
+# Copyright (C) 2025-2026 Garvey Ding <garveyding@gmail.com>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 
@@ -15,6 +15,7 @@ from ..adapters import (
 )
 from ..core.config import (
     OptionalField,
+    OptionalPoint,
     PointType,
     PrinterConfig
 )
@@ -89,10 +90,13 @@ class PrinterPurgeConfig(PrinterConfig):
     extrude_dist: float = retract_dist * 0.5
 
     # Tray
+    # Order to process axis from tray_point.
+    # Options: 'X', 'Y', 'XY'.
+    axis_first: str = "Y"
     # X/Y coordinates of the purge tray location
     tray_point: PointType = "(60.0, 100.0)"
     # X/Y coordinates for ejecting purged filament from tray
-    eject_point: PointType = "(60.0, 100.0)"
+    eject_point: OptionalPoint = "(60.0, 100.0)"
 
     # Custom Macro
     custom_before: OptionalField = "MMS_PURGE_CUSTOM_BEFORE"
@@ -191,19 +195,27 @@ class MMSPurge:
 
     # ---- Tray ----
     def move_to_tray(self):
-        # Toolhead move to tray point
-        # Always move Y-axis first to avoid accident
-        toolhead_adapter.move_y(
-            position = self.tray_point[1],
-            wait_toolhead = True
-        )
-        toolhead_adapter.move_x(
-            position = self.tray_point[0],
-            wait_toolhead = True
-        )
+        """Move toolhead to tray point with configured axis order."""
+        axis_first = self.axis_first.strip().upper()
+        tray_x, tray_y = self.tray_point[:2]
+        if axis_first == "X":
+            toolhead_adapter.move_x(tray_x, wait_toolhead=True)
+            toolhead_adapter.move_y(tray_y, wait_toolhead=True)
+        elif axis_first == "XY":
+            toolhead_adapter.move_xy(tray_x, tray_y, wait_toolhead=True)
+        else:
+            # Default move Y-axis first
+            toolhead_adapter.move_y(tray_y, wait_toolhead=True)
+            toolhead_adapter.move_x(tray_x, wait_toolhead=True)
+
+    def _can_tray_eject(self):
+        return self.eject_point is not None
 
     def tray_eject(self):
-        # Toolhead move to eject point to eject the blob
+        if not self._can_tray_eject():
+            return
+        # Toolhead move to eject point to eject the blob,
+        # if eject point is set
         toolhead_adapter.move_xy(
             position_x = self.eject_point[0],
             position_y = self.eject_point[1],
@@ -257,33 +269,6 @@ class MMSPurge:
     def _cold_pull_task(self, slot_num, distance, speed):
         self.mms_delivery.mms_move(
             slot_num, -abs(distance), speed, speed)
-
-    # def _pre_cut_nozzle_cleaning(self, slot_num):
-    #     # degrade_temp = self._get_material_degrade_temp(slot_num) + 20
-    #     degrade_temp = 220
-    #     extruder_adapter.set_temperature(degrade_temp, wait=True)
-
-    #     retract_speed = 25
-    #     extruder_adapter.retract(
-    #         distance=8,
-    #         speed=retract_speed * 1.2
-    #     )
-
-    #     toolhead_adapter.dwell(0.5)
-
-    #     # Cooldown
-    #     solidify_temp = 170
-    #     extruder_adapter.set_temperature(solidify_temp, wait=True)
-
-    #     purge_speed = 25
-    #     extruder_adapter.extrude(
-    #         distance=8,
-    #         speed=purge_speed * 0.8
-    #     )
-    #     extruder_adapter.retract(
-    #         distance=10,
-    #         speed=retract_speed * 0.8
-    #     )
 
     def _async_move_forward(self, slot_num, distance, speed):
 
@@ -518,15 +503,13 @@ class MMSPurge:
         mms_buffer = mms_slot.get_mms_buffer()
 
         # Calculation
+        e_filament_area = extruder_adapter.get_extruder_filament_area()
         purge_distance = self.get_purge_distance()
-        purge_volume = (
-            purge_distance * extruder_adapter.get_extruder_filament_area())
+        purge_volume = purge_distance * e_filament_area
 
         spring_stroke = mms_buffer.get_spring_stroke()
-        filament_cross_section = (
-            mms_buffer.get_status().get("filament_cross_section"))
-        deliver_distance = (purge_volume / filament_cross_section
-                            - spring_stroke * 0.5)
+        b_filament_cs = mms_buffer.get_status().get("filament_cross_section")
+        deliver_distance = purge_volume / b_filament_cs - spring_stroke * 0.5
 
         # Prepare
         self._prepare_mms_buffer(slot_num)
@@ -552,6 +535,9 @@ class MMSPurge:
                 wait = self.fan_cooldown_wait
             ):
             self.apply_retraction_compensation(slot_num)
+
+        # Try tray_eject
+        self.tray_eject()
 
         self.log_info_s(f"{log_prefix} finish")
 
@@ -603,6 +589,12 @@ class MMSPurge:
             self.move_to_tray()
 
     def cmd_MMS_TRAY_EJECT(self, gcmd=None):
+        if not self._can_tray_eject():
+            self.log_warning(
+                "eject_point is not available, MMS_TRAY_EJECT return"
+            )
+            return
+
         with toolhead_adapter.snapshot():
             with toolhead_adapter.safe_z_raise(self.z_raise):
                 self.move_to_tray()

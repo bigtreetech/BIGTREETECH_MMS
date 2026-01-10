@@ -1,5 +1,27 @@
 # MMS Change Log
 
+## Ver 0.1.0380
+
+- Optimized the log output format of MMS last_breath.
+
+- Autoload/Preload: Adjusted the process - get ViViD of the same group for SLOT_new triggering Autoload/Preload, record SLOT_old clamped by current group ViViD Selector, switch to SLOT_new to execute Autoload (load_to_gate & unload_to_gate) or Preload (pre_load_to_gate & unload_to_gate, difference lies in whether Inlet trigger is needed), then switch back to SLOT_old.
+
+- Extend + MMS Buffer: Added singleton BufferCommand to manage MMS Buffer-related GCode commands (MMS_BUFFER_ACTIVATE, MMS_BUFFER_DEACTIVATE, MMS_BUFFER_MEASURE, MMS_BUFFER_FILL, MMS_BUFFER_CLEAR, MMS_BUFFER_HALFWAY) to fix repeated registration and Klipper shutdown issue; added optional "EXTEND" parameter (INT, default 0) for the above commands to support dynamic configuration; added slot_num ownership verification.
+
+## Ver 0.1.0379
+
+- Filament Fracture: Conducted handle_while_homing_alter Test; suspended use of handle_while_homing_alter and rolled back to regular handle_while_homing as required to re-sort out relevant logic.
+
+- Purge (Crossbow Cut & Tray Docking): Optimized optional movement directions (default Y-axis first via "axis_first: Y"); allowed users to adjust to X-axis first to fix cutter collision issue; provided recommended configuration in mms-purge.cfg; supported MMS_TRAY command for testing updated movement behavior.
+
+## Ver 0.1.0378
+
+- Config: Added OptionalPoint; supported optional (X,Y) coordinate configuration like Purge eject_point.
+
+- Purge (Tray Eject): Changed eject_point to optional configuration (execute tray_eject and support MMS_TRAY_EJECT when enabled; not execute and not support when unconfigured/commented out); eject_point in mms-purge.cfg is disabled by comment by default.
+
+- Charge: Added slot_num recording function for successful charge; automatically performed teardown after printing.
+
 ## Ver 0.1.0377
 
 - Careful Charge test adjustments.
