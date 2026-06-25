@@ -710,7 +710,7 @@ class MmsServer:
             await self._initialize_mms()
             if self.nb_gates:
                 logging.info(f"MMS server: resetting {self.nb_gates} slots in Klipper")
-                reset_cmd = f"MMS_SLOT_MAP GATES={','.join(map(str, range(self.nb_gates)))} RESET=1 QUIET=1"
+                reset_cmd = f"MMS_SLOT_MAP GATES={','.join(map(str, range(self.nb_gates)))} RESET=1 QUIET=1 SYNC=1"
                 await self.klippy_apis.run_gcode(reset_cmd)
 
             if lane_items:
@@ -721,7 +721,7 @@ class MmsServer:
                     if slot is None: continue
                     
                     # Construct MMS_SLOT_MAP command
-                    parts = [f"MMS_SLOT_MAP SLOT={slot} QUIET=1"]
+                    parts = [f"MMS_SLOT_MAP SLOT={slot} QUIET=1 SYNC=1"]
                     if data.get('material'): parts.append(f"MATERIAL='{data['material']}'")
                     if data.get('color'): parts.append(f"COLOR='{data['color']}'")
                     if data.get('vendor_name'): parts.append(f"VENDOR='{data['vendor_name']}'")

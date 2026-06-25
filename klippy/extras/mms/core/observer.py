@@ -84,7 +84,8 @@ class PrintObserver:
     # ---- Observe ----
     def _observe(self):
         """Periodic task monitoring print state changes"""
-        self.stp_manager.check_running()
+        if self.stp_manager:
+            self.stp_manager.check_running()
 
         self.state_prev = self.state
         self.state = print_stats_adapter.get_state()
@@ -158,7 +159,13 @@ class PrintObserver:
         self.dcb_manager.register_resume_callback(callback, params)
 
     def register_mms_stepper(self, mms_stepper, handler):
-        self.stp_manager.register(mms_stepper, handler)
+        if self.stp_manager:
+            self.stp_manager.register(mms_stepper, handler)
+
+    def unregister(self, stepper_name):
+        if self.stp_manager:
+            return self.stp_manager.unregister(stepper_name)
+        return False
 
 
 class CallbackManager:
