@@ -6,6 +6,7 @@ from gi.repository import Gtk
 
 from ks_includes.screen_panel import ScreenPanel
 
+from vivid.controllers.mms import get_klippy_api, get_rest_client
 from vivid.config.vivid_config import ColorConfig, VividConfig
 from vivid.components.box import FixedSquareBox
 from vivid.components.button import (
@@ -178,7 +179,7 @@ class Panel(ScreenPanel):
 
         # Sync to Klipper
         script = f"MMS_SLOT_MAP SLOT={self.slot_num} MATERIAL='{material}'"
-        self._screen._ws.klippy.gcode_script(script)
+        get_klippy_api(self._screen).gcode_script(script)
 
     # ---- Color Palette Components ----
     def create_color_palette(self):
@@ -244,7 +245,7 @@ class Panel(ScreenPanel):
         color_hex = new_color[1:] if new_color.startswith("#") else new_color
         color_hex = color_hex.lower()
         script = f"MMS_SLOT_MAP SLOT={self.slot_num} COLOR='{color_hex}'"
-        self._screen._ws.klippy.gcode_script(script)
+        get_klippy_api(self._screen).gcode_script(script)
 
         # Update hardware LED color
         self.mms_update_slot_led(new_color)
@@ -255,7 +256,7 @@ class Panel(ScreenPanel):
         color_hex = color[1:] if color.startswith("#") else color
         color_hex = color_hex.lower()
         script = f"MMS_LED_SET_COLOR SLOT={self.slot_num} COLOR={color_hex}"
-        self._screen._ws.klippy.gcode_script(script)
+        get_klippy_api(self._screen).gcode_script(script)
 
     # ---- SLOT Control Functions ----
     def create_slot_control(self, slot_num, color):
@@ -375,7 +376,7 @@ class Panel(ScreenPanel):
         return str(value)
 
     def _get_lane_data(self):
-        client = getattr(self._screen, "apiclient", None)
+        client = get_rest_client(self._screen)
         if not client:
             return None
         lane_result = client.send_request("server/database/item?namespace=lane_data")
@@ -388,7 +389,7 @@ class Panel(ScreenPanel):
         return slot_data if isinstance(slot_data, dict) else None
 
     def _get_mms_metadata(self):
-        client = getattr(self._screen, "apiclient", None)
+        client = get_rest_client(self._screen)
         if not client:
             return None
         # Query Klipper directly for mms object status
@@ -578,11 +579,11 @@ class Panel(ScreenPanel):
             f" NOZZLE_TEMP={nozzle_temp if nozzle_temp else empty_str}"
             f" BED_TEMP={bed_temp if bed_temp else empty_str}"
         )
-        self._screen._ws.klippy.gcode_script(script)
+        get_klippy_api(self._screen).gcode_script(script)
 
     def mms_slot_action(self, script):
         """Execute GCode command for slot action"""
-        self._screen._ws.klippy.gcode_script(script)
+        get_klippy_api(self._screen).gcode_script(script)
 
     # ---- Panel life ----
     def activate(self):

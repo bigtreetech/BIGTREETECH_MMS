@@ -93,7 +93,7 @@ class Panel(ScreenPanel):
         self.content.add(main_grid)
 
     def send_klippy_script(self, script):
-        self._screen._ws.klippy.gcode_script(script)
+        self.mms_controller.send_script(script)
 
     # ---- Section Creation Methods ----
     def create_slot_area(self):

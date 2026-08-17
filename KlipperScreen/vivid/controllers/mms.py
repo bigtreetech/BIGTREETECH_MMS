@@ -13,13 +13,48 @@ class ViViDKey:
     heater: str = "heater_generic ViViD_Dryer"
 
 
+def get_klippy_api(screen):
+    """Get the Moonraker API object from a KlipperScreen window.
+
+    KlipperScreen renamed `_ws.klippy` to `_ws.api`; return whichever
+    attribute exists so the same code works on both versions.
+    """
+    return (getattr(screen._ws, 'klippy', None)
+            or getattr(screen._ws, 'api', None))
+
+
+def get_rest_client(screen):
+    """Get the KlippyRest client from a KlipperScreen window.
+
+    KlipperScreen renamed `screen.apiclient` to `screen.restApi`; return
+    whichever attribute exists so the same code works on both versions.
+    """
+    return (getattr(screen, 'apiclient', None)
+            or getattr(screen, 'restApi', None))
+
+
 class MMSController:
     def __init__(self, screen):
         self._screen = screen
-        self._klippy = self._screen._ws.klippy
-        # "client" should be KlippyRest() in ks_includes/KlippyRest.py
-        # Or get it with ScreenPanel._screen.apiclient
-        self._client = self._screen.apiclient
+        # self._klippy = self._screen._ws.klippy
+        # # "client" should be KlippyRest() in ks_includes/KlippyRest.py
+        # # Or get it with ScreenPanel._screen.apiclient
+        # self._client = self._screen.apiclient
+        try:
+            self._klippy = get_klippy_api(self._screen)
+            self._client = get_rest_client(self._screen)
+            if self._klippy is None or self._client is None:
+                missing = []
+                if self._klippy is None:
+                    missing.append("_ws.klippy/_ws.api")
+                if self._client is None:
+                    missing.append("screen.apiclient/screen.restApi")
+                raise RuntimeError(
+                    f"MMSController: missing KlipperScreen API "
+                    f"dependencies: {', '.join(missing)}")
+        except Exception as e:
+            logging.exception(f"MMSController initialization failed: {e}")
+            raise
 
         self.method = "printer/objects/query?mms"
 
