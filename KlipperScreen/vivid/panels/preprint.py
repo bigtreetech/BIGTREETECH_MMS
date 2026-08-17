@@ -7,6 +7,7 @@ from gi.repository import Gtk
 
 from ks_includes.screen_panel import ScreenPanel
 
+from vivid.controllers.mms import get_klippy_api
 from vivid.config.manager import VividConfigManager
 from vivid.components.box import (
     FixedSquareBox, 
@@ -375,7 +376,7 @@ class Panel(ScreenPanel):
         for swap_num, slot_num in self.mapping_pairs:
             # Filename could have " ", so use \"\" to avoid error
             script = f"MMS_SWAP_MAPPING SWAP_NUM={swap_num} SLOT={slot_num} FILENAME=\"{self.gf_filename}\""
-            self._screen._ws.klippy.gcode_script(script)
+            get_klippy_api(self._screen).gcode_script(script)
 
 
 def parse_filament_colors(
