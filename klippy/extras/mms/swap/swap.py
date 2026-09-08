@@ -61,6 +61,10 @@ class PrinterSwapConfig(PrinterConfig):
     # Unit: mm/min
     toolhead_move_speed: float = 24000.0
 
+    # Skip redundant swap if target slot is already the current slot
+    # 0 = disabled, 1 = enabled
+    skip_same_slot: int = 1
+
     # Custom Macro
     custom_before: OptionalField = "MMS_SWAP_CUSTOM_BEFORE"
     custom_after: OptionalField = "MMS_SWAP_CUSTOM_AFTER"
@@ -350,7 +354,13 @@ class MMSSwap:
                 f"{log_prefix} safety checks failed")
             return False
 
-        # Even is same slot, always do swap
+        if self.skip_same_slot and slot_num_from == slot_num_to \
+            and self.mms_charge.get_charged_slot() == slot_num_to:
+            self.log_info(
+                f"target slot[{slot_num_to}] is already current, skip swap")
+            self._exec_custom_macro(self.custom_after, "after")
+            return True
+
         self.log_info_s(f"{log_prefix} begin")
         self.log_info_s(
             f"{log_prefix} determine loading slots: {loading_slots}"

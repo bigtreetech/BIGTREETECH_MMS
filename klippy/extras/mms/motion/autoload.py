@@ -219,16 +219,21 @@ class MMSAutoload:
             return
 
         mms_slot = self.mms.get_mms_slot(slot_num)
-        with mms_slot.slot_rfid.execute():
-            if mms_slot.inlet.is_triggered():
-                try:
+        if mms_slot.inlet.is_triggered():
+            try:
+                # Select slot FIRST, before starting RFID detection
+                # This prevents the RFID reader from detecting other slots' tags
+                # while the selector is rotating to the target slot.
+                self.mms_delivery.select_slot(slot_num)
+                
+                with mms_slot.slot_rfid.execute():
                     self.mms_delivery.autoload_to_gate(slot_num)
-                except DeliveryTerminateSignal:
-                    self.log_info(f"slot[{slot_num}] autoload terminated")
-                except DeliveryFailedError:
-                    return
-                except Exception as e:
-                    self.log_error(f"slot[{slot_num}] autoload error: {e}")
+            except DeliveryTerminateSignal:
+                self.log_info(f"slot[{slot_num}] autoload terminated")
+            except DeliveryFailedError:
+                return
+            except Exception as e:
+                self.log_error(f"slot[{slot_num}] autoload error: {e}")
 
     # ---- Pre-load ----
     def _can_pre_load(self):
@@ -247,6 +252,7 @@ class MMSAutoload:
 
     def mms_pre_load(self, slot_num):
         try:
+            self.mms_delivery.select_slot(slot_num)
             self.mms_delivery.preload_to_gate(slot_num)
         except DeliveryTerminateSignal:
             self.log_info(f"slot[{slot_num}] pre_load terminated")

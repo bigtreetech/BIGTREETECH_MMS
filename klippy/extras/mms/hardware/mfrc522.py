@@ -196,8 +196,14 @@ class MFRC522Config:
     PICC_CMD_AUTH_KEY_A: int = 0x60
     # Anti collision/Select, Cascade Level 1
     PICC_CMD_SEL_CL1: int = 0x93
+    # Anti collision/Select, Cascade Level 2
+    PICC_CMD_SEL_CL2: int = 0x95
+    # Anti collision/Select, Cascade Level 3
+    PICC_CMD_SEL_CL3: int = 0x97
     # Writes one 16 byte block to the authenticated sector of the PICC.
     PICC_CMD_WRITE: int = 0xA0
+    # Writes one 4 byte page to the MIFARE Ultralight/NTAG.
+    PICC_CMD_UL_WRITE: int = 0xA2
 
     PICC_CMD_HALT: int = 0x50
 
@@ -1060,7 +1066,7 @@ class MFRC522Handler:
         return status
 
     # PICC Related
-    def picc_select(self, uid):
+    def picc_select(self, uid, cmd=None):
         """
         Selects a tag or card for communication.
         Which also means transmits SELECT/ANTICOLLISION
@@ -1080,10 +1086,13 @@ class MFRC522Handler:
         """
         assert uid, f"Select get error UID: {uid}"
 
+        if cmd is None:
+            cmd = self.config.PICC_CMD_SEL_CL1
+
         buffer = []
 
         # Add the command byte and tag type to the buffer
-        buffer.append(self.config.PICC_CMD_SEL_CL1)
+        buffer.append(cmd)
         # Number of Valid Bits: Seven whole bytes
         buffer.append(0x70)
         # Add the serial number of the tag to the buffer
@@ -1246,14 +1255,17 @@ class MFRC522Handler:
 
         return status
 
-    def anticollision(self):
+    def anticollision(self, cmd=None):
         """
         Sends an anticollision command.
         Performs an anticollision algorithm to a tag or card
         to prevent multiple tags from responding.
         """
+        if cmd is None:
+            cmd = self.config.PICC_CMD_SEL_CL1
+
         # Append the PICC_ANTICOLL command and 0x20 to the buffer list
-        buffer = [self.config.PICC_CMD_SEL_CL1, 0x20]
+        buffer = [cmd, 0x20]
 
         # Set the BitFramingReg to 0x00
         self.write_reg("REG_BIT_FRAMING", self.config.PCD_IDLE)
@@ -1319,7 +1331,7 @@ class MFRC522Handler:
         Reads data from a specific block of a RFID card.
         """
         # Check block is valid
-        assert block_num in range(64), f"block {block_num} is out of range(64)"
+        assert block_num in range(256), f"block {block_num} is out of range(256)"
 
         err_msg = None
 
@@ -1360,8 +1372,8 @@ class MFRC522Handler:
         Argument "data" should be a list of 16 bytes data.
         """
         # Check block is valid
-        assert block_num in range(64), \
-            f"block {block_num} is out of range(64)"
+        assert block_num in range(256), \
+            f"block {block_num} is out of range(256)"
 
         buffer = [self.config.PICC_CMD_WRITE, block_num]
 
@@ -1413,6 +1425,30 @@ class MFRC522Handler:
         if status == self.status.OK:
             logging.info(f"Data written to block: {block_num}")
 
+        return True
+
+    def write_ntag_page(self, page_num, data):
+        """
+        Write a 4-byte page to NTAG/MIFARE Ultralight.
+        """
+        assert page_num in range(256), f"page {page_num} is out of range(256)"
+        assert len(data) == 4, f"NTAG write requires exactly 4 bytes, got {len(data)}"
+        
+        buffer = [self.config.PICC_CMD_UL_WRITE, page_num] + list(data)
+        try:
+            buffer += self.pcd_calculate_CRC(buffer)[:2]
+            status, back_data, back_bits = self.pcd_to_picc(
+                command=self.config.PCD_TRANSCEIVE,
+                send_data=buffer, need_bits_len=True)
+        except Exception as e:
+            logging.error(f"write ntag page error: {e}")
+            return False
+
+        if status != self.status.OK or back_bits != 4 or (back_data[0] & 0x0F) != 0x0A:
+            logging.error(f"Write ntag page failed, status: {status}")
+            return False
+            
+        logging.info(f"Data written to ntag page: {page_num}")
         return True
 
     # Bussiness func
@@ -1477,35 +1513,50 @@ class MFRC522Handler:
     def _prepare(self):
         """
         Prepare for Read/Write blocks in Tag.
-        1. Request
-        2. Anti-collision
-        3. Select
-        4. Authenticate <- need block_num, do in bussiness func
-
-        Before Reading/Writing a new Sector, must be called everytime.
+        Handles both 4-byte and 7-byte (NTAG) UIDs through cascading.
         """
-        # Send request to RFID tag
+        # 1. Request
         status = self.request(mode=self.config.PICC_CMD_REQA)
         if status != self.status.OK:
             return None
 
-        # Anticollision, return UID if successful
-        status, uid = self.anticollision()
+        # 2. Anticollision / Select Cascading
+        # Cascade Level 1
+        status, uid = self.anticollision(self.config.PICC_CMD_SEL_CL1)
         if status != self.status.OK:
             return None
+        self.picc_select(uid, self.config.PICC_CMD_SEL_CL1)
 
-        if uid:
-            # Select the RFID tag
-            self.picc_select(uid)
+        # Check for Cascade Tag (0x88)
+        if uid[0] != 0x88:
+            return uid
 
-        return uid
+        # Cascade Level 2 (for 7-byte UIDs like NTAG)
+        full_uid = uid[1:4]
+        status, uid = self.anticollision(self.config.PICC_CMD_SEL_CL2)
+        if status != self.status.OK:
+            return full_uid
+        self.picc_select(uid, self.config.PICC_CMD_SEL_CL2)
+
+        if uid[0] != 0x88:
+            full_uid.extend(uid[:4])
+            return full_uid
+
+        # Cascade Level 3 (for 10-byte UIDs)
+        full_uid.extend(uid[1:4])
+        status, uid = self.anticollision(self.config.PICC_CMD_SEL_CL3)
+        if status != self.status.OK:
+            return full_uid
+        self.picc_select(uid, self.config.PICC_CMD_SEL_CL3)
+        full_uid.extend(uid[:4])
+        return full_uid
 
     def read_block_init(self, block_num):
         """
         Read data from the RFID tag.
         """
         # Check block is valid
-        assert block_num in range(64), f"block {block_num} is out of range(64)"
+        assert block_num in range(256), f"block {block_num} is out of range(256)"
 
         uid = self._prepare()
         if not uid:
@@ -1545,7 +1596,7 @@ class MFRC522Handler:
         assert uid, f"Read sector get error UID: {uid}"
 
          # Check block is valid
-        assert block_num in range(64), f"block {block_num} is out of range(64)"
+        assert block_num in range(256), f"block {block_num} is out of range(256)"
 
         # Authenticate with the tag using the provided key
         status = self.pcd_authenticate(
@@ -1615,7 +1666,7 @@ class MFRC522Handler:
         """
         assert uid, f"Read all blocks get error UID: {uid}"
 
-        block_num_lst = range(64)
+        block_num_lst = range(256)
         block_data_lst = []
 
         for block_num in block_num_lst:
@@ -1652,7 +1703,7 @@ class MFRC522Handler:
         assert uid, f"Write block single get error UID: {uid}"
 
         # Check sector is valid
-        assert block_num in range(64), f"block {block_num} is out of range(64)"
+        assert block_num in range(256), f"block {block_num} is out of range(256)"
 
         # Authenticate with the tag using the provided key
         self.pcd_authenticate(auth_mode=self.config.PICC_CMD_AUTH_KEY_A,
@@ -1707,6 +1758,54 @@ class MFRC522Handler:
             if block_data:
                 return block_data
         return None
+
+    def read_ntag_loop(self):
+        """
+        Read NTAG/Type 2 tag data (no authentication needed usually)
+        Reads up to 128 pages (512 bytes)
+        """
+        for _ in range(self.retry_times):
+            uid = self._prepare()
+            if not uid: continue
+            
+            data = bytearray()
+            # NTAG read command returns 4 pages (16 bytes) at once
+            for page in range(0, 256, 4):
+                try:
+                    res = self.read_block(page) # MFRC522 read_block uses PICC_CMD_READ
+                    if res:
+                        data.extend(res)
+                    else:
+                        break
+                except Exception:
+                    break
+            if data:
+                return data
+        return None
+
+    def write_ntag_loop(self, data, start_page=4):
+        """
+        Write a bytearray to NTAG starting at start_page.
+        """
+        for _ in range(self.retry_times):
+            uid = self._prepare()
+            if not uid: continue
+            
+            success = True
+            for i in range(0, len(data), 4):
+                page_data = data[i:i+4]
+                # Pad with zeros if less than 4 bytes
+                if len(page_data) < 4:
+                    page_data.extend([0] * (4 - len(page_data)))
+                
+                page_num = start_page + (i // 4)
+                if not self.write_ntag_page(page_num, page_data):
+                    success = False
+                    break
+            
+            if success:
+                return True
+        return False
 
     def prepare_loop(self):
         """
@@ -1774,8 +1873,11 @@ class MFRC522Service:
         self.callback = callback
 
     def teardown(self):
-        if self.timer:
-            self.reactor.unregister_timer(self.timer)
+        if self.timer and self.reactor:
+            try:
+                self.reactor.unregister_timer(self.timer)
+            except Exception:
+                pass
             self.timer = None
 
         if self.func:

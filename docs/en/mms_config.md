@@ -99,6 +99,27 @@ MMS_SLOT_MAP SLOT=0 NOZZLE_TEMP=240 BED_TEMP=80
 MMS_SLOT_MAP RESET=1
 ```
 
+#### RFID Commands
+
+Manage RFID tags for filament identification.
+
+*   **MMS_RFID_READ**: Reads RFID tag data from a specific slot.
+    *   `SLOT`: Slot number (e.g., `SLOT=0`).
+    *   `SWITCH`: `1` to start reading, `0` to stop.
+*   **MMS_RFID_WRITE**: Writes metadata to an RFID tag.
+    *   `SLOT`: Slot number.
+    *   `DATA`: JSON string containing filament metadata.
+    *   `ALIGN`: (Default: 1) If 1, automatically aligns the tag with the antenna before writing.
+*   **MMS_RFID_TRUNCATE**: Clears cached RFID data for a slot.
+    *   `SLOT`: Slot number.
+*   **MMS_RFID_RESET**: Resets RFID readers and internal states.
+
+**MMS_RFID_WRITE Example:**
+```
+MMS_RFID_WRITE SLOT=0 DATA='{"brand_name": "BTT", "material_type": "PLA", "primary_color": "FF0000"}'
+```
+See `config/bigtreetech-mms/rfid/rfid_write.json` for all supported fields.
+
 ### base/mms-cut.cfg
 
 #### [mms cut]
@@ -190,6 +211,8 @@ After the command completes, the Z-axis returns to its original height.
 * **enable**: This setting does not disable the `custom_before` and `custom_after` commands, so we can use it to disable the default swap filament change process and implement a `custom filament change` workflow using scripts.
 
 * **z_raise**: The height the Z-axis raises before filament change. After the filament change is complete, the Z-axis will return to its original height.
+
+* **skip_same_slot**: When enabled (default), the system will skip the swap process if the requested tool (after mapping) is already the currently loaded tool. This prevents redundant purges and brushes.
 
 * **command_string**: The name of the filament change gcode command. The default `T` means the gcode commands will be `T0`, `T1`, `T2`, `T3`, etc. **Do not modify this setting unless you clearly understand what it means.**
 

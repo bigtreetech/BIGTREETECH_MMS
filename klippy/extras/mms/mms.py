@@ -254,15 +254,35 @@ class MMS:
         self._is_connected = True
 
     def _handle_klippy_ready(self):
+        self._sync_retry_count = 0
         reactor = printer_adapter.get_reactor()
         reactor.register_timer(
-            callback=self._delayed_moonraker_sync,
+            callback=self._persistent_moonraker_sync,
             waketime=reactor.monotonic() + 1.0
         )
 
-    def _delayed_moonraker_sync(self, eventtime):
-        self._moonraker_pull_lane_data()
-        self._moonraker_sync_lane_data()
+    def _persistent_moonraker_sync(self, eventtime):
+        self._sync_retry_count += 1
+        
+        # Try to pull data
+        success = False
+        try:
+            if self._is_connected:
+                webhooks = printer_adapter.get_obj("webhooks")
+                webhooks.call_remote_method("moonraker_pull_lane_data")
+                success = True
+        except Exception:
+            success = False
+
+        if success:
+            self.log_info(f"Moonraker lane_data sync successful on attempt {self._sync_retry_count}")
+            self._moonraker_sync_lane_data()
+            return printer_adapter.get_reactor().NEVER
+        
+        if self._sync_retry_count < 5:
+            return eventtime + 2.0
+        
+        self.log_warning("Moonraker lane_data sync failed after 5 attempts")
         return printer_adapter.get_reactor().NEVER
 
     def _handle_klippy_shutdown(self):
@@ -1249,10 +1269,20 @@ class MMS:
 
     def cmd_MMS_RFID_WRITE(self, gcmd):
         slot_num = gcmd.get_int("SLOT", minval=0)
+        data = gcmd.get("DATA", default="{}")
+        align = gcmd.get_int("ALIGN", default=1)
         if not self.slot_is_available(slot_num):
             return
         mms_slot = self.get_mms_slot(slot_num)
-        mms_slot.slot_rfid.rfid_write()
+        
+        if align:
+            mms_delivery = printer_adapter.get_mms_delivery()
+            mms_delivery.deliver_async_task(
+                mms_slot.slot_rfid.align_and_write,
+                {"data": data}
+            )
+        else:
+            mms_slot.slot_rfid.rfid_write(data)
 
     def cmd_MMS_RFID_TRUNCATE(self, gcmd):
         slot_num = gcmd.get_int("SLOT", minval=0)
@@ -1575,6 +1605,7 @@ class MMS:
         quiet = gcmd.get_int("QUIET", default=0)
         detail = gcmd.get_int("DETAIL", default=0)
         reset = gcmd.get_int("RESET", default=0)
+        sync = gcmd.get_int("SYNC", default=0)
 
         vendor_raw = gcmd.get("VENDOR", default=None)
         name_raw = gcmd.get("NAME", default=None)
@@ -1667,7 +1698,7 @@ class MMS:
             if updated:
                 updated_slots.append(gate_num)
 
-        if updated_slots:
+        if updated_slots and not sync:
             self.notify_lane_data_changed(updated_slots)
 
         if not quiet:

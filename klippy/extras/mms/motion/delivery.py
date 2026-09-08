@@ -5,6 +5,7 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 
 import time
+import traceback
 from contextlib import nullcontext
 from dataclasses import dataclass, field, fields
 
@@ -401,6 +402,9 @@ class MMSDelivery:
             msg_dist = f"{msg} total distances moved:{distance_moved:.3f}"
 
             if mms_selector.move_is_terminated():
+                if self._wait_for_rfid_reading(slot_num):
+                    continue
+
                 self._led_effect_deactivate(slot_num_lst)
                 self.log_info_s(f"{msg} is terminated")
                 self.log_info_s(msg_dist)
@@ -464,6 +468,22 @@ class MMSDelivery:
                 f"accel {accel:.2f}mm/s^2 limit to {limited:.2f}mm/s^2")
         return limited
 
+    def _wait_for_rfid_reading(self, slot_num):
+        mms_slot = self.mms.get_mms_slot(slot_num)
+        if mms_slot.slot_rfid.is_reading():
+            self.log_info(f"slot[{slot_num}] paused for RFID reading")
+            begin_at = time.time()
+            # Wait one spool rotation tops (approx 8 seconds)
+            timeout = 8.0
+            while mms_slot.slot_rfid.is_reading():
+                self.pause(0.1)
+                if time.time() - begin_at > timeout:
+                    self.log_warning(f"slot[{slot_num}] RFID wait timeout after {timeout}s")
+                    mms_slot.slot_rfid.read_end()
+                    break
+            return True
+        return False
+
     # -- Deliver --
     def _deliver_distance(self, slot_num, distance, speed=None, accel=None):
         mms_slot = self.mms.get_mms_slot(slot_num)
@@ -496,12 +516,24 @@ class MMSDelivery:
         # Apply move
         mms_drive = mms_slot.get_mms_drive()
         mms_drive.update_focus_slot(slot_num)
-        context = (
-            self.mms_fil_detection.monitor(slot_num)
-            if distance>0 else nullcontext()
-        )
-        with context:
-            mms_drive.manual_move(distance, speed, accel)
+        
+        remaining_distance = distance
+        while abs(remaining_distance) > 0.001:
+            context = (
+                self.mms_fil_detection.monitor(slot_num)
+                if remaining_distance>0 else nullcontext()
+            )
+            with context:
+                mms_drive.manual_move(remaining_distance, speed, accel)
+            
+            moved = mms_drive.get_distance_moved()
+            remaining_distance -= moved
+            
+            if abs(remaining_distance) > 0.001:
+                if not self._wait_for_rfid_reading(slot_num):
+                    # Terminated by other reason
+                    break
+                # RFID read finished, loop will retry remaining distance
 
         self.log_info_s(f"{msg} finish")
 
@@ -539,14 +571,26 @@ class MMSDelivery:
         # Apply drive move
         mms_drive = mms_slot.get_mms_drive()
         mms_drive.update_focus_slot(slot_num)
-        # If deliver forward, enable monitoring
-        # Else disable with Null context manager
-        context = (
-            self.mms_fil_detection.monitor(slot_num)
-            if distance>0 else nullcontext()
-        )
-        with context:
-            mms_drive.drip_move(distance, speed, accel)
+        
+        remaining_distance = distance
+        while abs(remaining_distance) > 0.001:
+            # If deliver forward, enable monitoring
+            # Else disable with Null context manager
+            context = (
+                self.mms_fil_detection.monitor(slot_num)
+                if remaining_distance>0 else nullcontext()
+            )
+            with context:
+                mms_drive.drip_move(remaining_distance, speed, accel)
+            
+            moved = mms_drive.get_distance_moved()
+            remaining_distance -= moved
+
+            if abs(remaining_distance) > 0.001:
+                if not self._wait_for_rfid_reading(slot_num):
+                    # Terminated by other reason
+                    break
+                # RFID read finished, loop will retry remaining distance
 
         self.log_info_s(f"{msg} finish")
 
@@ -555,6 +599,11 @@ class MMSDelivery:
         self, slot_num, pin_type, forward, trigger, distance, speed, accel
     ):
         mms_slot = self.mms.get_mms_slot(slot_num)
+        if mms_slot.slot_rfid.is_reading():
+            self.log_info(f"slot[{slot_num}] waiting for RFID reading before move")
+            while mms_slot.slot_rfid.is_reading():
+                self.pause(0.1)
+
         if not self._can_deliver():
             raise DeliveryPreconditionError(
                 f"slot[{slot_num}] can not deliver", mms_slot)
@@ -653,11 +702,19 @@ class MMSDelivery:
             f"speed: {spd:.2f} mm/s\n"
             f"accel: {acc:.2f} mm/s^2"
         )
-        self._drive_deliver_to(
-            slot_num, pin_type, forward, trigger,
-            distance, spd, acc
-        )
-        distance_moved = mms_drive.get_distance_moved()
+        
+        while True:
+            self._drive_deliver_to(
+                slot_num, pin_type, forward, trigger,
+                distance, spd, acc
+            )
+            distance_moved = mms_drive.get_distance_moved()
+            
+            if mms_drive.move_is_terminated():
+                if self._wait_for_rfid_reading(slot_num):
+                    continue
+                raise DeliveryTerminateSignal()
+            break
 
         # Check destination pin state
         if mms_slot.check_pin(pin_type, trigger):
@@ -826,6 +883,11 @@ class MMSDelivery:
 
         # Check terminated
         if mms_drive.move_is_terminated():
+            # If it was terminated by RFID detection, don't raise Exception
+            # Instead, return False to allow deliver_with_retry to retry
+            if self._wait_for_rfid_reading(slot_num):
+                return False, distance_moved
+
             self.log_info_s(
                 f"{msg} is terminated, moved: {distance_moved:.2f} mm")
             raise DeliveryTerminateSignal()
@@ -1058,6 +1120,9 @@ class MMSDelivery:
 
             # Check terminated
             if mms_drive.move_is_terminated():
+                if self._wait_for_rfid_reading(slot_num):
+                    continue # Retry this autoload step
+
                 raise DeliveryTerminateSignal()
             # Check complated
             if mms_drive.move_is_completed(result):
@@ -1096,14 +1161,9 @@ class MMSDelivery:
                     )
 
         # Deliver backward without re-select
-        safe_dist = -abs(self.pd_config.safety_retract_distance)
-        mms_drive.manual_move(
-            safe_dist,
-            self.pd_config.sprint_speed,
-            self.pd_config.sprint_accel
-        )
+        self._safety_retract(slot_num)
         self.log_info_s(
-            f"slot[{slot_num}] deliver {safe_dist:.2f} mm finish")
+            f"slot[{slot_num}] deliver safety retract finish")
 
         # Re-calibrate backward with twice factor
         self._selector_refine_calibration(slot_num, factor=-2)
@@ -1127,15 +1187,9 @@ class MMSDelivery:
             accel=self.pd_config.sprint_accel
         )
         # Deliver backward without re-select
-        safe_dist = -abs(self.pd_config.safety_retract_distance)
-        mms_drive = mms_slot.get_mms_drive()
-        mms_drive.manual_move(
-            safe_dist,
-            self.pd_config.sprint_speed,
-            self.pd_config.sprint_accel
-        )
+        self._safety_retract(slot_num)
         self.log_info_s(
-            f"slot[{slot_num}] deliver {safe_dist:.2f} mm finish")
+            f"slot[{slot_num}] deliver safety retract finish")
 
         # Re-calibrate backward with twice factor
         self._selector_refine_calibration(slot_num, factor=-2)
@@ -1756,6 +1810,7 @@ class MMSDelivery:
             #     self.async_task_sp.stop()
         except Exception as e:
             self.log_error(f"slot[{msg_slot}] stop error: {e}")
+            self.log_error(traceback.format_exc())
             return False
 
         self.log_info_s(f"slot[{msg_slot}] stop finish")

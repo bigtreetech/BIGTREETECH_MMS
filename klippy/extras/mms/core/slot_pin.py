@@ -166,13 +166,16 @@ class BaseSlotPin(ABC):
         self.pin_obj.register_trigger_callback(callback, params)
 
     def remove_trigger_callback(self, callback):
-        self.pin_obj.unregister_trigger_callback(callback)
+        if self.pin_obj:
+            self.pin_obj.unregister_trigger_callback(callback)
 
     def add_release_callback(self, callback, params=None):
-        self.pin_obj.register_release_callback(callback, params)
+        if self.pin_obj:
+            self.pin_obj.register_release_callback(callback, params)
 
     def remove_release_callback(self, callback):
-        self.pin_obj.unregister_release_callback(callback)
+        if self.pin_obj:
+            self.pin_obj.unregister_release_callback(callback)
 
     @contextmanager
     def monitor_release(self, condition, callback, params):
@@ -232,7 +235,11 @@ class BaseSlotPin(ABC):
         reactor.pause(reactor.monotonic() + SlotPinConfig.break_delay)
 
         # Teardown dispatch
-        mcu_dispatch.stop()
+        try:
+            mcu_dispatch.stop()
+        except Exception:
+            # This can fail in mcu.py during race conditions, ignore it
+            pass
 
         return True
 

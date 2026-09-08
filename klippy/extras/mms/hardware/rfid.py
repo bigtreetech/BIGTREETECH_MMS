@@ -139,160 +139,56 @@ class RFIDManager:
 
     def rfid_read(self):
         """
-        hash_read
-            hash data read from Tag
-        hash_cached
-            hash data read from Cached
-        hash_calculate
-            hash data calculate from full blocks data read from Tag
+        Modified rfid_read to be more flexible.
+        Returns BTT JSON if valid, otherwise returns a dictionary with raw data for fallback.
         """
         with self.use_antenna():
             uid = self.handler.prepare_loop()
             if not uid:
-                self.log_info_s("No Tag, return")
-                return
+                return None
 
             uid_s = self.handler.format_block_data(uid)
-            # self.log_info_s(f"Tag uid={uid_s}")
 
-            # Read the Sector 15 to get hash data, prepare have done before
+            # Try to read Sector 15 for BTT Hash
             sector_15_lst = self.handler.read_sector(uid=uid, sector_num=15)
-            sector_15_lst.sort(key=lambda tup: tup[0])
-            # Filter block 60 & block 61 data
-            blocks_lst = list(filter(lambda tup: tup[0] in [60, 61],
-                                     sector_15_lst))
-
-            # Block data to string
-            hash_read = self.hash_assistant.block_to_string(blocks_lst)
-            self.log_info_s(f"hash_read: {hash_read}")
-
-            # Validation schema
-            if not hash_read:
-                self.log_error(f"Hash block read error with UID: {uid_s}")
-                return
-
-            if not self.hash_assistant.is_valid_length(hash_read):
-                self.log_error(f"The hash data has wrong length: {hash_read}")
-                return
-
-            if not self.hash_assistant.is_hexadecimal(hash_read):
-                self.log_error(f"The hash data is not hex: {hash_read}")
-                return
-
-            if self.hash_assistant.has_high_zero_ratio(hash_read):
-                self.log_error(f"The hash data has high zero ratio:"
-                               f" {hash_read}")
-                return
-
-            # Get cached blocks data by uid string
-            cache_key = self.cache.gen_key(uid_s)
-            blocks_cached = self.cache.get(cache_key)
-            # Reload flag init False
-            need_reload = False
-
-            if blocks_cached:
-                self.log_info_s("cache load")
-
-                # If cached blocks exists, find the cached block 60/61 first
-                blocks_cached.sort(key=lambda tup: tup[0])
-                blocks_hash = list(
-                    filter(lambda tup: tup[0] in [60, 61], blocks_cached))
-
-                hash_cached = self.hash_assistant.block_to_string(blocks_hash)
-                self.log_info_s(f"hash_cached: {hash_cached}")
-
-                if hash_read == hash_cached:
-                    # Read and cached hash data are the same,
-                    # return cached data
-                    self.log_info_s(
-                        "cached found and hash match, return blocks cached"
-                    )
-                    # for i,data in blocks_cached:
-                    #     self.log_info_s(f"Block {i}: {data}")
-
-                    cache_key = self.cache.gen_key(uid_s, prefix="rfid_dict")
-                    rfid_model_json = self.cache.get(cache_key)
-                    # self.log_info_s(rfid_model_json)
-
-                    return rfid_model_json
-
-                else:
-                    # Read and cached hash data are different
-                    # reload new block data
-                    self.log_info_s("cache not the same, reload")
-                    need_reload = True
-            else:
-                # No cached found, reload new block data
-                self.log_info_s("init load...")
-                need_reload = True
-
-            if need_reload:
-                # Reload begin, prepare before read
-                uid_new = self.handler.prepare_loop()
-                if not uid_new:
-                    self.log_info_s("no Tag, reload failed, exit")
-                    return
-
-                uid_new_s = self.handler.format_block_data(uid_new)
-
-                # If new UID is not the same UID of begin,
-                # a new Tag collision problem may happen, exit
-                if uid_new_s != uid_s:
-                    self.log_info_s(f"UID begin: {uid_s}")
-                    self.log_info_s(f"UID current: {uid_new_s}")
-                    self.log_info_s(f"found different UID, reload failed, exit")
-                    return
-
-                # Read full blocks data
-                blocks_read = self.handler.read_all_loop(uid)
-
-                if blocks_read:
-                    # Calculate and check hash_block is valid
-
-                    # Get the data from block 0 to block 59
-                    blocks_read.sort(key=lambda tup: tup[0])
-                    data_string = (
-                        self.hash_assistant.block_to_string(blocks_read[:60]))
-                    hash_calculate = (
-                        self.hash_assistant.hash_as_string(data_string))
-                    self.log_info_s(f"hash_calculate: {hash_calculate}")
-
-                    # Validation check
-                    if hash_read != hash_calculate:
-                        self.log_error("read hash block data not equal to"
-                                       " calculated, exit")
-                        return
-
-                    # Cached the full blocks data
+            if sector_15_lst:
+                sector_15_lst.sort(key=lambda tup: tup[0])
+                blocks_lst = list(filter(lambda tup: tup[0] in [60, 61],
+                                         sector_15_lst))
+                hash_read = self.hash_assistant.block_to_string(blocks_lst)
+                
+                if hash_read and self.hash_assistant.is_valid_length(hash_read):
+                    # It looks like a BTT tag, try standard BTT read logic
                     cache_key = self.cache.gen_key(uid_s)
-                    self.cache.add(cache_key, blocks_read)
-                    self.log_info_s(
-                        f"RFID data success cached with UID: {uid_s}")
-                    # for i,data in blocks_read:
-                    #     self.log_info_s(f"Block {i}: {data}")
+                    blocks_cached = self.cache.get(cache_key)
+                    if blocks_cached:
+                        blocks_hash = list(filter(lambda tup: tup[0] in [60, 61], blocks_cached))
+                        hash_cached = self.hash_assistant.block_to_string(blocks_hash)
+                        if hash_read == hash_cached:
+                            cache_key = self.cache.gen_key(uid_s, prefix="rfid_dict")
+                            return self.cache.get(cache_key)
 
-                    blocks_dct = {
-                        str(tup[0]):tup[1].replace(" ", "")
-                        for tup in blocks_read
-                    }
-                    # self.log_info_s(f"blocks_dct: {blocks_dct}")
+                    # Reload/Read full blocks for BTT
+                    blocks_read = self.handler.read_all_loop(uid)
+                    if blocks_read:
+                        blocks_read.sort(key=lambda tup: tup[0])
+                        data_string = self.hash_assistant.block_to_string(blocks_read[:60])
+                        hash_calculate = self.hash_assistant.hash_as_string(data_string)
+                        if hash_read == hash_calculate:
+                            blocks_dct = {str(tup[0]):tup[1].replace(" ", "") for tup in blocks_read}
+                            rfid_model = self.new_rfid_model()
+                            rfid_model.from_blocks(blocks_dct)
+                            rfid_model_json = rfid_model.to_json()
+                            self.cache.add(self.cache.gen_key(uid_s), blocks_read)
+                            self.cache.add(self.cache.gen_key(uid_s, prefix="rfid_dict"), rfid_model_json)
+                            return rfid_model_json
 
-                    rfid_model = self.new_rfid_model()
-                    rfid_model.from_blocks(blocks_dct)
-                    rfid_model_json = rfid_model.to_json()
+            # If BTT check failed or wasn't a MIFARE tag, try NTAG (OpenPrintTag)
+            ntag_data = self.handler.read_ntag_loop()
+            if ntag_data:
+                return json.dumps({"_type": "ntag_raw", "data": ntag_data.hex()})
 
-                    cache_key = self.cache.gen_key(uid_s, prefix="rfid_dict")
-                    self.cache.add(cache_key, rfid_model_json)
-                    # self.log_info_s(rfid_model_json)
-
-                    return rfid_model_json
-
-                else:
-                    self.log_info_s(
-                        "failed to Read all blocks data while reloading, exit"
-                    )
-
-            return
+            return None
 
     def rfid_write_block(self, block_num, byte_array):
         with self.use_antenna():
@@ -403,11 +299,6 @@ class MMSRfid:
             key = "NAME", value = self.name,
             func = self.cmd_MMS_RFID_READ
         )
-        gcode_adapter.register_mux(
-            cmd = "MMS_RFID_WRITE_DEV",
-            key = "NAME", value = self.name,
-            func = self.cmd_MMS_RFID_WRITE
-        )
         # gcode_adapter.register_mux(
         #     cmd = "MMS_RFID_READ_TAGS",
         #     key = "NAME", value = self.name,
@@ -426,73 +317,29 @@ class MMSRfid:
         self.periodic_task.set_timeout(duration)
 
     # ---- Tag write ----
-    def _load_rfid_file(self):
-         # Most likely return "/home/.../printer_data/config/printer.cfg"
-        cfg_path = printer_adapter.get_klippy_configfile()
-        # base_dir should be "/home/.../printer_data/config/"
-        base_dir = os.path.dirname(cfg_path)
-        # filename should be "rfid_write.json"
-        filename = os.path.basename(self.rfid_data_file)
-
-        full_path = None
-        json_data = None
-
-        for root, _, files in os.walk(base_dir):
-            if filename in files:
-                full_path = os.path.join(root, filename)
-                if self.rfid_data_file in full_path:
-                    try:
-                        with open(full_path, 'r', encoding='utf-8') as f:
-                            content = f.read()
-                        json_data = json.loads(content)
-                    except json.JSONDecodeError as e:
-                        self.log_error(f"JSON decode error ({full_path}): {e}")
-                    except Exception as e:
-                        self.log_error(f"open file error {full_path}: {e}")
-
-        return full_path, json_data
-
-        # full_path = os.path.join(base_dir, self.rfid_data_file)
-        # try:
-        #     with open(full_path, 'r', encoding='utf-8') as f:
-        #         content = f.read()
-        #     json_data = json.loads(content)
-        # except json.JSONDecodeError as e:
-        #     self.log_error(f"JSON decode error ({full_path}): {e}")
-        # except Exception as e:
-        #     self.log_error(f"open file error {full_path}: {e}")
-
-    def write(self):
-        full_path, json_data = self._load_rfid_file()
-        if not json_data:
-            self.log_warning(
-                f"RFID[{self.name}] write load rfid file failed"
-            )
+    def write_ntag(self, data_json):
+        try:
+            data = json.loads(data_json)
+        except Exception as e:
+            self.log_error(f"JSON decode error: {e}")
             return False
 
-        # Setup model
-        rfid_model = self.rfid_manager.new_rfid_model()
-        rfid_model.from_dict(json_data)
+        from .openprinttag import OPTEncoder
+        encoder = OPTEncoder()
+        opt_data = encoder.map_from_mms(data)
+        ndef_payload = encoder.encode(opt_data)
 
-        # Log data
-        data_encode_json = rfid_model.to_json()
-        self.log_info(
-            f"RFID[{self.name}] write\n"
-            "load data from file:\n"
-            f"{full_path}\n"
-            "data encode json:\n"
-            f"{data_encode_json}"
-        )
+        self.log_info(f"RFID[{self.name}] writing NTAG with payload length: {len(ndef_payload)}")
 
-        # Write to tag
-        prepared_blocks = rfid_model.prepare_blocks_writing()
-        for block_num, byte_array in prepared_blocks.items():
-            success = self.rfid_manager.rfid_write_block(block_num, byte_array)
-            if not success:
-                return False
+        with self.rfid_manager.use_antenna():
+            success = self.rfid_manager.handler.write_ntag_loop(ndef_payload, start_page=4)
 
-        self.rfid_manager.rfid_write_hash()
-        return True
+        if success:
+            self.log_info(f"RFID[{self.name}] NTAG write successful")
+            return True
+        else:
+            self.log_error(f"RFID[{self.name}] NTAG write failed")
+            return False
 
     # ---- Tag detect ----
     def detect_begin(self, callback):
@@ -691,15 +538,6 @@ class MMSRfid:
             self.read_begin(callback=self._handle_read)
         else:
             self.read_end()
-
-    def cmd_MMS_RFID_WRITE(self, gcmd):
-        """
-        Usage:
-            MMS_RFID_WRITE_DEV NAME=mfrc522_0
-        """
-        self.log_info(f"RFID[{self.name}] write start")
-        self.write()
-        self.log_info(f"RFID[{self.name}] write finish")
 
     # def cmd_MMS_RFID_READ_TAGS(self, gcmd):
     #     self.rfid_manager.get_tags()

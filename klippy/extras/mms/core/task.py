@@ -7,26 +7,29 @@
 import time
 from dataclasses import dataclass
 
-from ..adapters import printer_adapter
+from ..adapters import (
+    printer_adapter,
+)
 
 
 @dataclass(frozen=True)
 class TaskConfig:
-    # The default interval for rescheduling tasks, in seconds
-    default_period: float = 0.25
+    default_period: float = 0.5
 
 
 class AsyncTask:
     """
-    A class to run asynchronous functions in a reactor.
+    A class to represent an asynchronous task.
+    This class allows you to schedule a function to be executed asynchronously
+    after a specified period of time.
 
-    Example:
-        func = self.log_pin_adc
-        params = {"target_pin":"buffer:PA2"}
+    Usage:
+        def foo(p1, p2):
+            pass
 
         task = AsyncTask()
         try:
-            is_ready = task.setup(func, params)
+            is_ready = task.setup(foo, {"p1": 1, "p2": 2})
             if is_ready:
                 task.start()
         except Exception as e:
@@ -35,16 +38,20 @@ class AsyncTask:
     def __init__(self):
         self.reactor = printer_adapter.get_reactor()
 
-        # The function to be executed asynchronously
+        # The function to be executed
         self.func = None
         # The parameters to be passed to the function
         self.params = None
-        # An optional callback function to be called with the result of func
+        # An optional callback function to be called after the task is completed
         self.callback = None
-        # The completion event for the async task
-        self.completion = self.reactor.completion()
+        # An optional callback function to be called if the task times out
+        self.timeout_callback = None
 
+        # Completion object to signal the end of the task
+        self.completion = None
+        # A boolean indicating whether the task is currently running
         self.running = False
+
         self.mms_logger = None
 
     def _initialize_loggers(self):
@@ -55,15 +62,34 @@ class AsyncTask:
             self.log_warning = self.mms_logger.create_log_warning()
             self.log_error = self.mms_logger.create_log_error()
 
-    def setup(self, func, params=None, callback=None):
+    def setup(self, func, params=None, callback=None, timeout_callback=None):
         """
-        Sets up the asynchronous task with the given function and parameters.
-        Returns True if the setup was successful, False if a task is
-        already running.
+        Setup the asynchronous task.
+        Args:
+            func (callable): The function to be executed.
+            params (optional): Parameters to be passed to the function.
+            callback (optional): A callback function to be executed after
+                                 the task is completed.
+        Returns:
+            bool: True if the task was successfully setup
+                  False if a task is already running.
+
+        Notice:
+            "func" should not be @ by a decorator, such as contextmanager,
+            which may return a generator but not the wanner function.
+
+            E.g.
+                @contextmanager
+                def foo():
+                    yield
+
+                schedule(func=foo)
+
+                # self.func => <contextlib._GeneratorContextManager object>
         """
         self._initialize_loggers()
 
-        if self.func and self.running:
+        if self.running:
             self.log_warning(
                 f"async task func:{self.func} exists and running, skip...")
             return False
@@ -71,49 +97,13 @@ class AsyncTask:
         self.func = func
         self.params = params
         self.callback = callback
+        self.timeout_callback = timeout_callback
         return True
 
-    def _complete(self, result):
-        """
-        Completes the asynchronous task by signaling the reactor and
-        resetting the task state.
-        """
-        self.reactor.async_complete(self.completion, result)
-        self.func = None
-        self.params = None
-        self.callback = None
-
-        # Update running to stop the task
-        self.running = False
-        # self.log_info(
-        #     f"async task complete func:{self.func}"
-        #     f" at {self.reactor.monotonic()}")
-
-    def _execute(self, eventtime):
-        """
-        Executes the asynchronous task.
-        eventtime (float): The time at which the event is executed.
-        """
-        # self.log_info(f"async task executed func:{self.func} at {eventtime}")
-        result = None
-        try:
-            result = self.func(**self.params) \
-                if self.params is not None \
-                else self.func()
-        except Exception as e:
-            self.log_error(f"async task error:{e}")
-
-        # No matter func task is success or not, call callback
-        if self.callback:
-            try:
-                self.callback(result)
-            except Exception as e:
-                self.log_error(f"async task callback error:{e}")
-
-        self._complete(result or 1)
-        return result
-
     def start(self):
+        """
+        Start the asynchronous task.
+        """
         if not self.func:
             self.log_warning("async task func not exists, return")
             return False
@@ -142,42 +132,58 @@ class AsyncTask:
     def is_running(self):
         return self.running
 
+    def _execute(self, eventtime):
+        """
+        Executes the asynchronous task function.
+        Args:
+            eventtime (float): The current event time.
+        """
+        try:
+            result = self.func(**self.params) \
+                if self.params is not None \
+                else self.func()
+
+            if self.callback:
+                self.callback(result)
+        except Exception as e:
+            self.log_error(f"async task '{self.func}' execute error: {e}")
+            if self.timeout_callback:
+                self.timeout_callback(e)
+        finally:
+            self._complete(0)
+            self.running = False
+
+    def _complete(self, result):
+        if self.completion:
+            if self.reactor:
+                try:
+                    self.reactor.async_complete(self.completion, result)
+                except Exception:
+                    pass
+            self.completion = None
+
 
 class PeriodicTask:
     """
     Timer manager class for MMS.
     Schedule loop in reactor.
 
-    In the PeriodicTask:
-
-    - Non-blocking but non-precise:
-        Task execution is non-blocking to the reactor, but won't strictly
-        adhere to the set period when overrun occurs.
-
-    - Execution mechanism:
-        If a task exceeds its period (e.g. runs 20ms for 10ms period),
-        the next execution waits until current completion.
-        This is enforced by reactor's timer system - it processes next
-        event only after current callback finishes.
-
-    - Timer logic:
-        Next waketimeis calculated based on task completion
-        time (now + period), not fixed intervals.
-        Visible in _execute() where update_timer() is called post-execution
-
-    - vs Threads:
-        Threaded solutions maintain period precision (parallel execution).
-        Reactor's single-threaded event loop must complete tasks sequentially.
-
-    Key implication:
-        This design prevents task pileup but trades off timing precision,
-        which is characteristic of event-loop architectures.
-
     Usage:
-        Start a PeriodicTask
-            task.schedule() -> task.start()
-        Stop a PeriodicTask
-            task.stop()
+        def foo(p1, p2):
+            pass
+
+        task = PeriodicTask()
+        task.set_period(period=0.1)
+        try:
+            is_ready = task.schedule(foo, {"p1": 1, "p2": 2})
+            if is_ready:
+                task.start()
+
+        except Exception as e:
+            self.log_error(f"error:{e}")
+
+        # In another process, stop the task
+        task.stop()
 
     Example:
         func = self.log_pin_adc
@@ -281,8 +287,11 @@ class PeriodicTask:
         Clean up the MMS service by unregistering the timer and clearing
         the function references.
         """
-        if self.timer:
-            self.reactor.unregister_timer(self.timer)
+        if self.timer and self.reactor:
+            try:
+                self.reactor.unregister_timer(self.timer)
+            except Exception:
+                pass
             self.timer = None
 
         if self.func:
@@ -299,47 +308,43 @@ class PeriodicTask:
         Executes the periodic task function and handles the timer.
         Args:
             eventtime (float): The current event time.
-        Returns:
-            float: The next wake time for the timer, or reactor.NEVER
-            if the timer no longer exists.
         """
-        if self.func is None or self.timer is None:
-            self.log_warning(f"periodic task func or timer not exists, exit")
+        if self.func is None:
+            self.log_warning(f"periodic task func not exists, return")
+            return self.reactor.NEVER
+
+        if self.timer is None:
+            self.log_warning(f"periodic task timer not exists, return")
             return self.reactor.NEVER
 
         try:
+            # Check for timeout
+            if self.timeout is not None:
+                if (time.time() - self.start_at) > self.timeout:
+                    self.log_warning(
+                        f"periodic task '{self.func}' timeout, return")
+                    if self.timeout_callback:
+                        self.timeout_callback()
+                    self._teardown()
+                    self.running = False
+                    return self.reactor.NEVER
+
+            # Execute the function
             result = self.func(**self.params) \
                 if self.params is not None \
                 else self.func()
-            # self.log_info(
-            #     f"periodic task executed func:{self.func} at {eventtime}")
 
             if self.callback:
                 self.callback(result)
 
+            # Schedule the next execution
+            return self.get_next_waketime()
+
         except Exception as e:
-            self.log_error(f"periodic task error:{e}, exit")
-            self.stop()
+            self.log_error(f"periodic task '{self.func}' execute error: {e}")
+            self._teardown()
+            self.running = False
             return self.reactor.NEVER
-
-        # Check timer again after func is executed
-        if self.timer is None:
-            self.log_info(f"periodic task timer not exists, exit")
-            return self.reactor.NEVER
-
-        if self.timeout is not None and self.start_at is not None:
-            if time.time() - self.start_at > self.timeout:
-                self.log_info(f"periodic task execution timeout, exit")
-                if self.timeout_callback:
-                    self.timeout_callback()
-                self.stop()
-                return self.reactor.NEVER
-
-        # Re-register the timer for the next execution
-        waketime = self.get_next_waketime()
-        # self.log_info(f"periodic task next waketime: {waketime}")
-        # self.reactor.update_timer(self.timer, waketime)
-        return waketime
 
     def start(self):
         if not self.func:
