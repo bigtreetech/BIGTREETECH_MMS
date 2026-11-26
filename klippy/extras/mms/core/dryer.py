@@ -6,7 +6,7 @@
 
 import time
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Final, Optional
 
 from ..adapters import printer_adapter, heaters_adapter
@@ -44,6 +44,7 @@ class Dryer:
 class MMSDryer:
     def __init__(self, heater):
         self.reactor = printer_adapter.get_reactor()
+        self._timer = self.reactor.register_timer(self.teardown)
 
         self._dryer = Dryer(heater = heater)
         self.materials = (PLA, ABS, PETG, ASA, PLA_CF, TEST_FILAMENT)
@@ -76,6 +77,8 @@ class MMSDryer:
         if not pheater:
             return False
 
+        heaters_adapter.set_temperature(
+            heater=pheater, temp=f_material.temperature, wait=False)
         now = time.time()
         self._dryer.start_at = now
         self._dryer.finish_at = now + f_material.heat_duration
@@ -89,37 +92,33 @@ class MMSDryer:
             f"{self._dryer.temperature}C - "
             f"{f_material.heat_duration}s"
         )
-        heaters_adapter.set_temperature(
-            heater = pheater,
-            temp = f_material.temperature,
-            wait = False
-        )
         self.countdown(f_material.heat_duration)
 
         return True
 
     def stop_heating(self):
-        if not self._dryer.is_heating:
-            return False
-
         pheater = heaters_adapter.find_heater(self._dryer.heater)
         if not pheater:
             return False
 
+        if (not self._dryer.is_heating
+                and not pheater.get_temp(self.reactor.monotonic())[1]):
+            return False
         heaters_adapter.set_temperature(heater=pheater, temp=0)
-        self._dryer.is_heating = False
-        self.log_info_s(
-            f"mms_dryer[{self._dryer.heater}] end, "
-            f"{self._dryer.material_name} - "
-            f"{self._dryer.temperature}C"
-        )
+        self.clear_countdown()
         return True
 
+    def clear_countdown(self):
+        self.reactor.update_timer(self._timer, self.reactor.NEVER)
+        if self._dryer.is_heating:
+            self.log_info_s(
+                f"mms_dryer[{self._dryer.heater}] end, "
+                f"{self._dryer.material_name} - {self._dryer.temperature}C")
+        self._dryer.is_heating = False
+
     def countdown(self, duration):
-        self.reactor.register_timer(
-            callback=self.teardown,
-            waketime=self.reactor.monotonic()+duration
-        )
+        self.reactor.update_timer(
+            self._timer, self.reactor.monotonic() + duration)
 
     def teardown(self, eventtime):
         self.stop_heating()

@@ -5,6 +5,7 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 
 from .base import BaseAdapter
+from .gcode import gcode_adapter
 
 
 class PauseResumeAdapter(BaseAdapter):
@@ -24,22 +25,24 @@ class PauseResumeAdapter(BaseAdapter):
     def is_paused(self):
         return self.get_current_status().get("is_paused")
 
-    ###########################
-    # --
-    # Klipper Pause Flow
-    # --
-    # PauseResume.send_pause_command()
-    # -> VirtualSD.do_pause() set VirtualSD.must_pause_work to True
-    # -> VirtualSD.work_handler() loop break
-    # -> | PrintStats.note_pause() update PrintStats.state
-    #    | PauseResume.send_pause_command() set
-    #      PauseResume.pause_command_sent to True
-    ###########################
-    # def has_pause_command_sent(self):
-    #     return self._get_pause_resume().pause_command_sent is True
+    def get_sd_file(self):
+        sd = self._get_pause_resume().v_sd
+        return sd.current_file if sd is not None else None
 
-    # def has_resume_or_clear_command_sent(self):
-    #     return self._get_pause_resume().pause_command_sent is False
+    def send_pause_command(self):
+        native = self._get_pause_resume()
+        sd_file = native.v_sd.current_file if native.is_sd_active() else None
+        native.send_pause_command()
+        return sd_file
+
+    def owns_file_pause(self, sd_file):
+        native = self._get_pause_resume()
+        return (native.pause_command_sent and native.sd_paused
+                and native.v_sd is not None and native.v_sd.must_pause_work
+                and native.v_sd.current_file is sd_file)
+
+    def pause(self):
+        self._get_pause_resume().cmd_PAUSE(gcode_adapter.easy_gcmd("PAUSE"))
 
     def get_printer_object(self):
         return self._get_pause_resume()

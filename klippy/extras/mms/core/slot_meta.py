@@ -7,18 +7,10 @@
 import json
 import os
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, Optional, Tuple
 
+from .filament_metadata import SlotFilamentMeta
 from .slot_pin import PinType
-
-
-class MaterialType(Enum):
-    ABS = "ABS"
-    ASA = "ASA"
-    PETG = "PETG"
-    PLA = "PLA"
-    PLA_CF = "PLA-CF"
 
 
 @dataclass
@@ -29,16 +21,6 @@ class SlotPinMeta:
     outlet: Optional["SlotPinOutlet"] = field(default=None)
     buffer_runout: Optional["SlotPinBufferRunout"] = field(default=None)
     entry: Optional["SlotPinEntry"] = field(default=None)
-
-
-@dataclass
-class SlotFilamentMeta:
-    # Code as #000000
-    # filament_color: Optional[str] = field(init=False, default=None)
-    filament_color: Optional[str] = None
-    filament_material: Optional[MaterialType] = None
-    spool_id: Optional[int] = None
-    filament_info: Dict[str, Any] = field(default_factory=dict)
 
 
 # class MaterialFactor(Enum):
@@ -172,15 +154,14 @@ class SlotMeta(SlotPinMeta, SlotFilamentMeta):
 
         # base_dir should be "/home/.../printer_data/config/"
         base_dir = os.path.dirname(self.cfg_path)
-        filename = os.path.basename(self._meta_file)
+        # Deterministic path, avoids scanning the whole config directory
+        # e.g. "<config_dir>/bigtreetech-mms/mms-slot-meta.json"
+        full_path = os.path.join(base_dir, self._meta_file)
 
-        for root, _, files in os.walk(base_dir):
-            if filename in files:
-                full_path = os.path.join(root, filename)
-                if self._meta_file in full_path:
-                    # Cache
-                    self.full_path = full_path
-                    return full_path
+        if os.path.isfile(full_path):
+            # Cache
+            self.full_path = full_path
+            return full_path
 
         return None
 
@@ -202,8 +183,10 @@ class SlotMeta(SlotPinMeta, SlotFilamentMeta):
 
         except json.JSONDecodeError as e:
             self.log_error(f"JSON decode error '{full_path}': {e}")
+            return full_path, None
         except Exception as e:
             self.log_error(f"open file error '{full_path}': {e}")
+            return full_path, None
 
         return full_path, data
 
@@ -251,13 +234,12 @@ class SlotMeta(SlotPinMeta, SlotFilamentMeta):
         _, data = self.read_file()
 
         slot_key = str(self.num)
+        if not isinstance(data, dict):
+            return False
         if slot_key not in data:
             data[slot_key] = {}
 
-        if "deliver_vector" not in data[slot_key]:
-            data[slot_key]["deliver_vector"] = {}
-
-        dv = data[slot_key]["deliver_vector"]
+        dv = data[slot_key]["deliver_vector"] = {}
 
         for (pin_type, forward), obj in self.deliver_vector.items():
             f_str = "forward" if forward else "backward"
@@ -269,12 +251,3 @@ class SlotMeta(SlotPinMeta, SlotFilamentMeta):
             }
 
         return self._atomic_write_file(full_path, data)
-
-    def truncate_file(self):
-        full_path = self._create_file()
-        if not full_path:
-            self.log_error(f"write file error '{full_path}'")
-            return False
-
-        # Write file with empty dict
-        return self._atomic_write_file(full_path, {})

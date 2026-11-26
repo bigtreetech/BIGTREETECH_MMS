@@ -8,7 +8,6 @@ from contextlib import contextmanager
 from dataclasses import dataclass, fields
 
 from ..adapters import (
-    extruder_adapter,
     gcode_adapter,
     printer_adapter,
     toolhead_adapter,
@@ -40,6 +39,10 @@ class PrinterBrushConfig(PrinterConfig):
     # Unit: seconds
     fan_cooldown_wait: float = 1.0
 
+    # Ordinary recovery keeps a separate cooling wait from tool changes.
+    # Defaults to fan_cooldown_wait when omitted (seconds).
+    resume_fan_cooldown_wait: float = 1.0
+
     # Brush Wiping Configuration
     # X/Y coordinates of the wipe points on the brush
     # Toolhead moves sequentially between these points to wipe the nozzle
@@ -66,9 +69,28 @@ class PrinterBrushConfig(PrinterConfig):
     peck_times: int = 0
 
     # Custom Macro
+    # When provided, this replaces both native wipe and peck paths.
+    custom_clean: OptionalField = None
     custom_before: OptionalField = "MMS_BRUSH_CUSTOM_BEFORE"
     custom_after: OptionalField = "MMS_BRUSH_CUSTOM_AFTER"
 
+
+    def get_type_handlers(self):
+        handlers = super().get_type_handlers()
+        handlers[int] = lambda config, name: config.getint(
+            name, getattr(type(self), name))
+        handlers[float] = lambda config, name: (
+            config.getfloat(
+                name, config.getfloat("fan_cooldown_wait", 1.0), minval=0.0
+            )
+            if name == "resume_fan_cooldown_wait"
+            else config.getfloat(name, getattr(type(self), name))
+        )
+        handlers[PointsType] = lambda config, name: PointsType.parse(
+            config.get(name, getattr(type(self), name)))
+        handlers[PointType] = lambda config, name: PointType.parse(
+            config.get(name, getattr(type(self), name)))
+        return handlers
 
 class MMSBrush:
     def __init__(self, config):
@@ -165,35 +187,6 @@ class MMSBrush:
                 self.log_error(f"brush wipe error: {e}")
                 return False
 
-    def wipe_cold(self):
-        if not self._safety_checks():
-            return False
-
-        if not self.wipe_points:
-            self.log_warning("wipe_points is not available, return")
-            return
-
-        # wipe_cold_temp = get_filament_cold_temp()
-        wipe_cold_temp = 180.0
-        wipe_cold_wait = 3.0
-
-        with self._brush_is_running():
-            current_temp = extruder_adapter.get_current_temp()
-            if current_temp > wipe_cold_temp:
-                extruder_adapter.set_temperature(wipe_cold_temp)
-
-            # Wipe only once
-            for point in self.wipe_points:
-                toolhead_adapter.move_xy(
-                    position_x = point[0],
-                    position_y = point[1],
-                    speed = self.wipe_speed,
-                    wait_toolhead = False
-                )
-
-            extruder_adapter.set_temperature(current_temp)
-            toolhead_adapter.dwell(delay=wipe_cold_wait)
-
     def peck(self):
         if not self._safety_checks():
             return False
@@ -235,74 +228,71 @@ class MMSBrush:
                 self.log_error(f"brush peck error: {e}")
                 return False
 
-    def mms_brush(self):
-        if self.custom_before:
-            self.log_info(
-                f"MMS execute macro before BRUSH: {self.custom_before}")
-            gcode_adapter.run_command(self.custom_before)
-
+    def mms_brush(self, cooldown_wait=None):
         if not self.is_enabled():
-            self.log_info_s("MMS BRUSH is disabled, skip...")
             return True
-
         if not self._safety_checks():
             return False
-
-        log_prefix = f"slot[*] brush"
-        self.log_info_s(f"{log_prefix} begin")
+        toolhead_adapter.check_motion()
+        if self.custom_before:
+            gcode_adapter.run_command(self.custom_before, strict=True)
 
         with toolhead_adapter.fan_cooldown(
-                speed = self.fan_cooldown_speed,
-                wait = self.fan_cooldown_wait
-            ):
-            if not self.wipe():
-                self.log_warning(f"{log_prefix} failed")
+            speed=self.fan_cooldown_speed,
+            wait=(
+                self.fan_cooldown_wait
+                if cooldown_wait is None
+                else cooldown_wait
+            ),
+        ):
+            if self.custom_clean:
+                with self._brush_is_running():
+                    gcode_adapter.run_command(self.custom_clean, strict=True)
+            elif not self.wipe() or not self.peck():
                 return False
 
-            if not self.peck():
-                self.log_warning(f"{log_prefix} failed")
-                return False
-
-        self.log_info_s(f"{log_prefix} finish")
-
+        toolhead_adapter.check_motion()
         if self.custom_after:
-            self.log_info(
-                f"MMS execute macro after BRUSH: {self.custom_after}")
-            gcode_adapter.run_command(self.custom_after)
-
+            gcode_adapter.run_command(self.custom_after, strict=True)
+        toolhead_adapter.check_motion()
         return True
 
     # ---- GCode ----
-    def cmd_MMS_BRUSH(self, gcmd=None):
-        with toolhead_adapter.snapshot():
-            with toolhead_adapter.safe_z_raise(self.z_raise):
-                self.mms_brush()
+    def cmd_MMS_BRUSH(self, gcmd):
+        self.mms.check_maintenance(gcmd)
+        with toolhead_adapter.motion_scope(
+                z_raise=self.z_raise) as state:
+            if not self.mms_brush():
+                raise gcmd.error("MMS_BRUSH failed")
+            toolhead_adapter.return_to_saved(state, clearance=self.z_raise)
 
-    def cmd_MMS_BRUSH_WIPE(self, gcmd=None):
-        if self.is_running():
-            self.log_warning("another brush is running, return")
-            return False
+    def cmd_MMS_BRUSH_WIPE(self, gcmd):
+        self.mms.check_maintenance(gcmd)
+        if self.custom_clean:
+            raise gcmd.error(
+                "Use MMS_BRUSH for the configured custom_clean path"
+            )
+        with toolhead_adapter.motion_scope(
+                z_raise=self.z_raise) as state:
+            with toolhead_adapter.fan_cooldown(
+                    speed=self.fan_cooldown_speed, wait=self.fan_cooldown_wait):
+                if not self.wipe():
+                    raise gcmd.error("MMS_BRUSH_WIPE failed")
+            toolhead_adapter.return_to_saved(state, clearance=self.z_raise)
 
-        with toolhead_adapter.snapshot():
-            with toolhead_adapter.safe_z_raise(self.z_raise):
-                with toolhead_adapter.fan_cooldown(
-                        speed = self.fan_cooldown_speed,
-                        wait = self.fan_cooldown_wait
-                    ):
-                    self.wipe()
-
-    def cmd_MMS_BRUSH_PECK(self, gcmd=None):
-        if self.is_running():
-            self.log_warning("another brush is running, return")
-            return False
-
-        with toolhead_adapter.snapshot():
-            with toolhead_adapter.safe_z_raise(self.z_raise):
-                with toolhead_adapter.fan_cooldown(
-                        speed = self.fan_cooldown_speed,
-                        wait = self.fan_cooldown_wait
-                    ):
-                    self.peck()
+    def cmd_MMS_BRUSH_PECK(self, gcmd):
+        self.mms.check_maintenance(gcmd)
+        if self.custom_clean:
+            raise gcmd.error(
+                "Use MMS_BRUSH for the configured custom_clean path"
+            )
+        with toolhead_adapter.motion_scope(
+                z_raise=self.z_raise) as state:
+            with toolhead_adapter.fan_cooldown(
+                    speed=self.fan_cooldown_speed, wait=self.fan_cooldown_wait):
+                if not self.peck():
+                    raise gcmd.error("MMS_BRUSH_PECK failed")
+            toolhead_adapter.return_to_saved(state, clearance=self.z_raise)
 
 
 def load_config(config):

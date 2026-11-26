@@ -65,6 +65,68 @@ log 日志相关配置, 默认配置遵循 klipper 规范, 请不要修改此配
 
 此配置包含了 ViViD 的宏命令配置。
 
+### 暂停恢复与切刀保护
+
+从 MMS `0.1.0496` 起，可将以下配置合并到启用 MMS 的打印机配置中。安装和升级会保留打印机现有的暂停、归零和停车宏。每个配置段只保留一个定义，停桶、擦嘴和切刀坐标沿用各机型的设置。
+
+#### 暂停超时与回温
+
+将下面的 `gcode:` 合并到现有的 `[idle_timeout]`，保留机器已设定的 `timeout`。原生暂停期间，`MMS_PAUSE_COOL` 关闭喷嘴并记录刚关闭的目标温度，热床和电机继续保持。允许恢复时，`RESUME` 可自动回温一次，当前非零温度目标优先。普通空闲超时关闭全部加热器，切刀回程未完成时继续锁住电机。
+
+```ini
+[idle_timeout]
+gcode:
+    {% if printer.pause_resume.is_paused %}
+        MMS_PAUSE_COOL
+    {% else %}
+        _VIVID_IDLE_SHUTDOWN
+    {% endif %}
+
+[gcode_macro _VIVID_IDLE_SHUTDOWN]
+gcode:
+    TURN_OFF_HEATERS
+    {% if not printer["mms eject"].cutter_return_pending %}
+        M84
+    {% endif %}
+```
+
+`CLEAR_PAUSE` 用于放弃空闲手动任务。若手动暂停已超时且设备仍处于空闲状态，清除暂停后调用同一套空闲收尾。已有 `CLEAR_PAUSE` 宏时，把判定放在原生清除命令之前，把收尾调用放在其后，并沿用现有的 `rename_existing`。
+
+```ini
+[gcode_macro CLEAR_PAUSE]
+rename_existing: VIVID_CLEAR_PAUSE_BASE
+gcode:
+    {% set stats = printer.print_stats|default({}) %}
+    {% set expired_manual = printer.pause_resume.is_paused
+       and printer.idle_timeout.state|upper == 'IDLE'
+       and not printer.mms.recovery.print_job
+       and stats.get('state') not in ['printing', 'paused'] %}
+    VIVID_CLEAR_PAUSE_BASE
+    {% if expired_manual %}
+        _VIVID_IDLE_SHUTDOWN
+    {% endif %}
+```
+
+#### 切刀未回程时的移动保护
+
+在归零、调平和擦嘴入口的首次移动前调用 `_VIVID_CHECK_CUTTER_RETURN`。已有 `G28` 宏或 `[homing_override]` 时，把检查加入原有归零入口。以下 `G28` 包装适用于没有自定义归零宏或 `[homing_override]` 的配置。
+
+```ini
+[gcode_macro _VIVID_CHECK_CUTTER_RETURN]
+gcode:
+    {% if printer["mms eject"].cutter_return_pending %}
+        {action_raise_error("Check the pending ViViD cutter return before moving")}
+    {% endif %}
+
+[gcode_macro G28]
+rename_existing: G28.1
+gcode:
+    _VIVID_CHECK_CUTTER_RETURN
+    G28.1 {rawparams}
+```
+
+在现有 `PAUSE` 和 `CANCEL_PRINT` 宏中，用 `{% if not printer["mms eject"].cutter_return_pending %}` 包住回抽、停车及释放电机的命令。暂停或取消命令自身仍须执行，取消后仍须关热。切刀回程未完成且 XYZ 位置仍可信时，检查机构后可在空闲状态执行 `MMS_SIMPLE_CUT` 完成回程。打印任务请用 `CANCEL_PRINT` 结束。若 XYZ 已不可信，先按机型维修流程确认喷头已安全脱离切刀机构，再重启 Klipper 并归零。
+
 ### base/mms-cut.cfg
 
 #### [mms cut]

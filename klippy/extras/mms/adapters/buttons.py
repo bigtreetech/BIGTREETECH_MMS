@@ -18,6 +18,17 @@ class ButtonsAdapter(BaseAdapter):
     def register_buttons(self, mcu_pin, callback):
         self._get_buttons().register_buttons([mcu_pin], callback)
 
+    def register_sensor(
+        self, config, pin, callback, analog_range=None, pullup=None
+    ):
+        # Keep ADC sampling and debounce inside Klipper across core versions.
+        buttons = self.printer.load_object(config, "buttons")
+        if analog_range is None:
+            buttons.register_debounce_button(pin, callback, config)
+        else:
+            buttons.register_debounce_adc_button(
+                pin, *analog_range, pullup, callback, config)
+
 
 # Global instance for singleton
 buttons_adapter = ButtonsAdapter()

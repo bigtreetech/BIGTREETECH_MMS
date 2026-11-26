@@ -5,7 +5,6 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 
 import json
-import time
 from contextlib import contextmanager
 
 from ..adapters import printer_adapter
@@ -27,6 +26,7 @@ class SlotRFID:
         # Status
         self._is_detecting = False
         self._is_reading = False
+        self._read_start_timer = None
         self.detect_begin_at = None
         self.detect_end_at = None
         self.read_begin_at = None
@@ -102,10 +102,11 @@ class SlotRFID:
             )
             return
 
-        self._is_detecting = True
-        self.detect_begin_at = time.time()
         self.mms_rfid.set_duration(self.detect_duration)
-        self.mms_rfid.detect_begin(callback=self._handle_detected)
+        if not self.mms_rfid.detect_begin(callback=self._handle_detected):
+            return False
+        self._is_detecting = True
+        self.detect_begin_at = printer_adapter.get_reactor().monotonic()
         self.log_info_s(
             f"slot[{self.slot_num}] RFID detect begin, "
             f"duration: {self.detect_duration}"
@@ -120,7 +121,7 @@ class SlotRFID:
 
         self.mms_rfid.detect_end()
         self._is_detecting = False
-        self.detect_end_at = time.time()
+        self.detect_end_at = printer_adapter.get_reactor().monotonic()
         self.log_info_s(f"slot[{self.slot_num}] RFID detect end")
 
     def _handle_detected(self, data):
@@ -132,16 +133,42 @@ class SlotRFID:
             )
 
             self.tag_uid = data
+            # Publish the handoff before stop() yields, so reset and flow
+            # cleanup can revoke it while the interrupted motor exits.
+            reactor = printer_adapter.get_reactor()
+            timer = reactor.register_timer(self._start_detected_read)
+            self._read_start_timer = timer
             success = self.mms_delivery.mms_stop(self.slot_num)
-            if success:
-                self.rfid_read_begin()
+            if self._read_start_timer is timer:
+                if success:
+                    # Reuse the periodic task only after this callback exits.
+                    reactor.update_timer(timer, reactor.NOW)
+                else:
+                    self._cancel_read_start()
 
         elif self._detect_is_timeout():
             self.rfid_detect_end()
             self.log_info_s(f"slot[{self.slot_num}] RFID detect timeout")
 
+    def _start_detected_read(self, eventtime):
+        self._cancel_read_start()
+        try:
+            self.rfid_read_begin()
+        except Exception as e:
+            self.log_error(f"slot[{self.slot_num}] RFID read start failed: {e}")
+            self.rfid_read_end()
+        return printer_adapter.get_reactor().NEVER
+
+    def _cancel_read_start(self):
+        if self._read_start_timer is not None:
+            printer_adapter.get_reactor().unregister_timer(
+                self._read_start_timer)
+            self._read_start_timer = None
+
     def _detect_is_timeout(self):
-        return time.time()-self.detect_begin_at > self.detect_duration
+        elapsed = (printer_adapter.get_reactor().monotonic()
+                   - self.detect_begin_at)
+        return elapsed > self.detect_duration
 
     def is_detecting(self):
         return self._is_detecting
@@ -150,18 +177,19 @@ class SlotRFID:
         if self._is_detecting:
             self.log_warning(
                 f"slot[{self.slot_num}] RFID is already only detecting")
-            return
-
-        self._is_detecting = True
-        self._initialize_tag()
-        self.detect_begin_at = time.time()
+            return False
 
         self.mms_rfid.set_duration(self.detect_duration)
-        self.mms_rfid.detect_begin(callback=self._handle_detected_only)
+        if not self.mms_rfid.detect_begin(callback=self._handle_detected_only):
+            return False
+        self._is_detecting = True
+        self._initialize_tag()
+        self.detect_begin_at = printer_adapter.get_reactor().monotonic()
         self.log_info_s(
             f"slot[{self.slot_num}] RFID only detect begin, "
             f"duration: {self.detect_duration}"
         )
+        return True
 
     def detect_only_end(self):
         if not self._is_detecting:
@@ -171,7 +199,7 @@ class SlotRFID:
 
         self.mms_rfid.detect_end()
         self._is_detecting = False
-        self.detect_end_at = time.time()
+        self.detect_end_at = printer_adapter.get_reactor().monotonic()
         self.log_info_s(
             f"slot[{self.slot_num}] RFID only detect end")
         return True
@@ -199,6 +227,7 @@ class SlotRFID:
 
     # ---- Read ----
     def rfid_read_begin(self):
+        self._cancel_read_start()
         if self._is_reading:
             self.log_warning(
                 f"slot[{self.slot_num}] RFID is already reading"
@@ -209,10 +238,11 @@ class SlotRFID:
         if self.has_tag_read():
             self._initialize_tag()
 
-        self._is_reading = True
-        self.read_begin_at = time.time()
         self.mms_rfid.set_duration(self.read_duration)
-        self.mms_rfid.read_begin(callback=self._handle_read)
+        if not self.mms_rfid.read_begin(callback=self._handle_read):
+            return False
+        self._is_reading = True
+        self.read_begin_at = printer_adapter.get_reactor().monotonic()
         self.log_info_s(
             f"slot[{self.slot_num}] RFID read begin, "
             f"duration: {self.read_duration}"
@@ -222,6 +252,7 @@ class SlotRFID:
         self.mms_slot.slot_led.activate_marquee()
 
     def rfid_read_end(self):
+        self._cancel_read_start()
         if not self._is_reading:
             self.log_warning(
                 f"slot[{self.slot_num}] RFID is not reading"
@@ -230,7 +261,7 @@ class SlotRFID:
 
         self.mms_rfid.read_end()
         self._is_reading = False
-        self.read_end_at = time.time()
+        self.read_end_at = printer_adapter.get_reactor().monotonic()
         self.log_info_s(f"slot[{self.slot_num}] RFID read end")
 
         # Deactivate LED effect
@@ -247,27 +278,36 @@ class SlotRFID:
             try:
                 self.tag_data = json.loads(data)
                 self.tag_color = self.tag_data.get("color_code")
-                self.mms_slot.set_filament_color(self.tag_color)
-                self.mms_slot.set_filament_material(
-                    self.tag_data.get("filament_material_type")
-                )
-                self.mms_slot.set_filament_info(self.tag_data)
-
-                mms = printer_adapter.get_mms()
-                if mms:
-                    mms.notify_lane_data_changed([self.slot_num])
-
-                # Set LED color
                 self.mms_slot.slot_led.rfid_set_color(self.tag_color)
             except Exception as e:
                 self.log_error(
                     f"slot[{self.slot_num}] RFID read tag data error: {e}")
+            else:
+                try:
+                    self.mms_slot.apply_rfid_metadata(self.tag_data)
+                except ValueError as e:
+                    self.log_warning(
+                        f"slot[{self.slot_num}] RFID filament metadata ignored: {e}")
 
-        elif time.time()-self.read_begin_at > self.read_duration:
+        elif (printer_adapter.get_reactor().monotonic() - self.read_begin_at
+              > self.read_duration):
             self.rfid_read_end()
             self.log_info(f"slot[{self.slot_num}] RFID read timeout")
 
     # ---- Flow ----
+    def wait_read(self, should_stop):
+        # RFID deliberately stops autoload to keep the tag at the reader.
+        # Retain that task until reading ends; user cancellation still exits.
+        reactor = printer_adapter.get_reactor()
+        while self._read_start_timer is not None or self._is_reading:
+            if should_stop():
+                return
+            if (self._is_reading
+                    and reactor.monotonic() - self.read_begin_at
+                    >= self.read_duration):
+                return
+            reactor.pause(reactor.monotonic() + 0.05)
+
     @contextmanager
     def execute(self):
         if self.enable:
@@ -278,13 +318,13 @@ class SlotRFID:
             if self.enable:
                 if self._is_detecting:
                     self.rfid_detect_end()
-                if self._is_reading:
+                if self._is_reading or self._read_start_timer is not None:
                     self.rfid_read_end()
 
     @contextmanager
     def detect_only(self):
-        if self.enable:
-            self.detect_only_begin()
+        if self.enable and not self.detect_only_begin():
+            raise RuntimeError(f"slot[{self.slot_num}] RFID reader is busy")
         try:
             yield
         finally:
@@ -298,10 +338,9 @@ class SlotRFID:
     # ---- Reset ----
     def reset(self):
         if self._is_detecting:
-            if not self.detect_only_end():
-                self.detect_end()
-        if self._is_reading:
-            self.read_end()
+            self.rfid_detect_end()
+        if self._is_reading or self._read_start_timer is not None:
+            self.rfid_read_end()
 
         if self.mms_rfid.is_detecting():
             self.mms_rfid.detect_end()

@@ -99,6 +99,68 @@ MMS_SLOT_MAP SLOT=0 NOZZLE_TEMP=240 BED_TEMP=80
 MMS_SLOT_MAP RESET=1
 ```
 
+### Pause recovery and cutter protection
+
+With MMS `0.1.0496` or later, merge the examples below into the printer configuration with MMS enabled. Installation and updates preserve the printer’s existing pause, homing, and parking macros. Keep one definition of each section and retain the machine’s tray, wipe, and cutter coordinates.
+
+#### Pause timeout and reheating
+
+Merge the `gcode:` below into the existing `[idle_timeout]` section and keep the configured `timeout`. During a native pause, `MMS_PAUSE_COOL` turns off the nozzle heater and records its target. The bed and motors stay on. If reheating is enabled, `RESUME` can restore the nozzle target once. A current nonzero target takes precedence. An ordinary idle timeout turns off all heaters and keeps the motors enabled while the cutter return is pending.
+
+```ini
+[idle_timeout]
+gcode:
+    {% if printer.pause_resume.is_paused %}
+        MMS_PAUSE_COOL
+    {% else %}
+        _VIVID_IDLE_SHUTDOWN
+    {% endif %}
+
+[gcode_macro _VIVID_IDLE_SHUTDOWN]
+gcode:
+    TURN_OFF_HEATERS
+    {% if not printer["mms eject"].cutter_return_pending %}
+        M84
+    {% endif %}
+```
+
+Use `CLEAR_PAUSE` to discard an idle manual task. If the manual pause has timed out and the printer is still idle, run the same idle shutdown after clearing the pause. If you already have a `CLEAR_PAUSE` macro, evaluate the condition before calling the native clear command, run the shutdown afterward, and keep the existing `rename_existing` alias.
+
+```ini
+[gcode_macro CLEAR_PAUSE]
+rename_existing: VIVID_CLEAR_PAUSE_BASE
+gcode:
+    {% set stats = printer.print_stats|default({}) %}
+    {% set expired_manual = printer.pause_resume.is_paused
+       and printer.idle_timeout.state|upper == 'IDLE'
+       and not printer.mms.recovery.print_job
+       and stats.get('state') not in ['printing', 'paused'] %}
+    VIVID_CLEAR_PAUSE_BASE
+    {% if expired_manual %}
+        _VIVID_IDLE_SHUTDOWN
+    {% endif %}
+```
+
+#### Motion protection while the cutter return is pending
+
+Call `_VIVID_CHECK_CUTTER_RETURN` before the first move in homing, leveling, and wiping routines. With an existing `G28` macro or `[homing_override]`, add the check to that routine. The `G28` wrapper below applies to configurations without a custom homing macro or `[homing_override]`.
+
+```ini
+[gcode_macro _VIVID_CHECK_CUTTER_RETURN]
+gcode:
+    {% if printer["mms eject"].cutter_return_pending %}
+        {action_raise_error("Check the pending ViViD cutter return before moving")}
+    {% endif %}
+
+[gcode_macro G28]
+rename_existing: G28.1
+gcode:
+    _VIVID_CHECK_CUTTER_RETURN
+    G28.1 {rawparams}
+```
+
+In existing `PAUSE` and `CANCEL_PRINT` macros, wrap retraction, parking and motor release commands in `{% if not printer["mms eject"].cutter_return_pending %}`. The native pause or cancel command still runs, and cancellation still turns off the heaters. If the cutter return is pending and XYZ coordinates are still trusted, inspect the mechanism and use `MMS_SIMPLE_CUT` while idle to finish the return. Use `CANCEL_PRINT` to end a print. If XYZ coordinates are no longer trusted, follow the machine’s service procedure to confirm the toolhead is clear of the cutter, then restart Klipper and home XYZ.
+
 ### base/mms-cut.cfg
 
 #### [mms cut]

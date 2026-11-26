@@ -7,6 +7,20 @@
 from dataclasses import dataclass, fields
 
 
+def get_buffer_config_float(config, name):
+    defaults = {
+        "buffer_target_percentage": 50.0,
+        "buffer_max_velocity": 80.0,
+        "buffer_max_accel": 120.0,
+    }
+    value = config.getfloat(name, defaults[name])
+    upper = 100.0 if name == "buffer_target_percentage" else float("inf")
+    if not 0.0 < value < upper:
+        raise config.error(
+            f"[{config.get_name()}] {name} must be above 0 and below {upper}")
+    return value
+
+
 @dataclass(frozen=True)
 class PrinterConfig:
     # Must be first line, printer_config is the param of loading object

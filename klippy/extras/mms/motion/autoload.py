@@ -10,11 +10,15 @@ from dataclasses import dataclass
 
 from ..adapters import (
     gcode_adapter,
+    pause_resume_adapter,
+    print_stats_adapter,
     printer_adapter,
     toolhead_adapter,
 )
 from ..core.config import PrinterConfig
-from ..core.exceptions import DeliveryFailedError, DeliveryTerminateSignal
+from ..core.exceptions import (
+    DeliveryFailedError, DeliveryTerminateSignal, MMSException,
+)
 from ..core.task import AsyncTask
 
 
@@ -30,7 +34,6 @@ class PrinterAutoloadConfig(PrinterConfig):
 class AutoloadConfig:
     show_debug_log: bool = True
     delay_seconds: float = 3
-    execute_stop_delay: float = 0.3
 
 
 class MMSAutoload:
@@ -44,6 +47,8 @@ class MMSAutoload:
 
         # Status
         self._in_progress = False
+        self._switching = False
+        self._cancel_switch = False
         self._should_break = False
         self._klippy_ready_at = None
         self._klippy_ready_delay_done = False
@@ -80,11 +85,25 @@ class MMSAutoload:
         self.log_error = mms_logger.create_log_error()
 
     # Progress control
-    def pause(self, period_seconds):
-        self.reactor.pause(self.reactor.monotonic() + period_seconds)
-
     def is_in_progress(self):
         return self._in_progress
+
+    def is_busy(self):
+        return self._switching or self.async_task.is_running()
+
+    def current_is_cancelled(self):
+        return self.async_task.current_is_cancelled()
+
+    def request_stop(self):
+        # Also cancel an execute() that has joined its old task but is still
+        # waiting to start the replacement.
+        self._cancel_switch = True
+        self._should_break = True
+        if self.async_task.is_running():
+            completion = self.async_task.completion
+            self.async_task.stop()
+            return completion
+        return None
 
     # ---- Autoload ----
     def is_enabled(self):
@@ -102,10 +121,10 @@ class MMSAutoload:
     @contextmanager
     def _execution(self, slot_num):
         self._in_progress = True
-        self._should_break = False
         self.log_info(f"slot[{slot_num}] autoload begin")
         try:
-            yield
+            with self.mms_delivery.maintenance_feeds(slot_num):
+                yield
         finally:
             self._in_progress = False
             self.log_info(f"slot[{slot_num}] autoload end")
@@ -123,21 +142,35 @@ class MMSAutoload:
         self._klippy_ready_delay_done = True
         return True
 
-    def _can_execute(self):
+    def _can_execute(self, allow_current=False):
         if not self._delay_satisfied():
             return False
 
-        if self._in_progress:
-            check_lst = []
-        else:
-            check_lst = [
-                (self.is_disabled, "mms_autoload is disabled"),
-                (self.mms.mms_drive_is_running, "drive is running"),
+        check_lst = [
+            (self.mms_delivery.is_stopping, "MMS_STOP is in progress"),
+            (self.mms_delivery.async_task_sp.is_running,
+             "background delivery is running"),
+            (self.is_disabled, "mms_autoload is disabled"),
+            (self.mms.printer_is_shutdown, "printer is shutdown"),
+            (print_stats_adapter.is_printing, "printer is printing"),
+            (print_stats_adapter.is_paused, "printer is paused"),
+            (pause_resume_adapter.is_paused, "printer is paused"),
+            (self.mms.printer_is_resuming, "printer is resuming"),
+            (lambda: self.mms.get_mms_resume().get_exhausted_slot()
+             is not None, "known exhausted filament requires clearance"),
+            (self.mms.mms_eject.finish_is_active, "print finish is running"),
+            (lambda: any(operation.is_running() for operation in (
+                self.mms.mms_swap, self.mms.mms_charge, self.mms.mms_eject,
+                self.mms.mms_swap.mms_cut, self.mms.mms_swap.mms_purge,
+                self.mms.mms_swap.mms_brush)), "MMS operation is running"),
+        ]
+        # An existing autoload may own the motors and toolhead timing while
+        # being stopped. Printer and enable checks still apply during that wait.
+        if not allow_current:
+            check_lst += [
+                (lambda: self.mms.mms_drive_is_running(include_buffer=False),
+                 "drive is running"),
                 (self.mms.mms_selector_is_running, "selector is running"),
-                (self.mms.printer_is_shutdown, "printer is prishutdownnting"),
-                (self.mms.printer_is_printing, "printer is printing"),
-                (self.mms.printer_is_paused, "printer is paused"),
-                (self.mms.printer_is_resuming, "printer is resuming"),
                 (toolhead_adapter.is_busy, "toolhead is busy")
             ]
 
@@ -151,7 +184,8 @@ class MMSAutoload:
 
     def _check_slot(self, mms_slot):
         # is_new_insert is True means slot is ready
-        if mms_slot.is_new_insert():
+        if (not mms_slot.cleanup_required and mms_slot.is_new_insert()
+                and not mms_slot.gate.is_triggered()):
             self.log_info(
                 f"slot[{mms_slot.get_num()}] is new insert, "
                 "ready for autoload"
@@ -165,6 +199,7 @@ class MMSAutoload:
             for mms_slot in self.mms.get_mms_slots():
                 if self._check_slot(mms_slot):
                     return mms_slot
+            return None
 
         mms_slot = self.mms.get_mms_slot(slot_num)
         if self._check_slot(mms_slot):
@@ -172,44 +207,86 @@ class MMSAutoload:
 
         # Default return None
         self.log_warning(
-            f"slot[{slot_num}] is not new insert, "
-            "autoload skip..."
+            f"slot[{slot_num}] autoload skipped; "
+            "check Inlet and cleanup_required in MMS_STATUS"
         )
         return None
 
     def execute(self, slot_num=None):
-        if not self._can_execute():
+        if self._switching:
+            self.log_warning("autoload replacement is in progress; retry later")
             return
 
-        mms_slot = self._fetch_slot(slot_num)
-        if mms_slot is None:
-            return
-
-        func = self._run
-        params = {"mms_slot":mms_slot}
+        # Own the complete stop/join/start sequence. A physical stop may still
+        # be unwinding after the old task completes; no new task can start then.
+        self._switching = True
+        self._cancel_switch = False
         try:
-            # Stop current autoload first
-            if self._in_progress:
-                self._stop_current()
-                self.async_task.stop()
-                self.pause(self.al_config.execute_stop_delay)
+            if not self._can_execute(
+                allow_current=self.async_task.is_running()
+            ):
+                return
+            mms_slot = self._fetch_slot(slot_num)
+            if mms_slot is None:
+                return
 
-            is_ready = self.async_task.setup(func, params)
+            if self.async_task.is_running():
+                completion = self.async_task.completion
+                # Capture ownership before stop or any operation that yields.
+                active_slot = (self.async_task.params['mms_slot'].get_num()
+                               if self._in_progress else None)
+                deadline = (
+                    self.reactor.monotonic()
+                    + self.mms_delivery.d_config.wait_mms_stepper_timeout
+                )
+                self.async_task.stop()
+                self._stop_current(active_slot)
+                completion.wait(deadline)
+                if not completion.test():
+                    self.log_warning(
+                        "autoload stop is still pending; retry after it exits")
+                    return
+                if self._cancel_switch or not self._can_execute(
+                    allow_current=True
+                ):
+                    return
+                # Homing updates toolhead print time; allow its existing idle
+                # window to settle before deciding if a replacement can start.
+                if not self.mms_delivery.wait_toolhead(
+                        should_stop=lambda: self._cancel_switch):
+                    self.log_warning(
+                        "autoload toolhead is still busy; "
+                        "retry after it is idle"
+                    )
+                    return
+            if self._cancel_switch or not self._can_execute():
+                return
+            mms_slot = self._fetch_slot(slot_num)
+            if mms_slot is None:
+                return
+            is_ready = self.async_task.setup(self._run, {"mms_slot": mms_slot})
             if is_ready:
+                self._should_break = False
                 self.async_task.start()
 
         except Exception as e:
             self.log_error(f"slot[{slot_num or '*'}] autoload error:{e}")
+        finally:
+            self._switching = False
 
-    def _stop_current(self):
-        slot_num = self.mms.get_current_slot()
+    def _stop_current(self, slot_num):
+        self._should_break = True
         if slot_num is None:
             return
-        self._should_break = True
         if self.mms_delivery.mms_stop(slot_num):
             self.log_info(f"slot[{slot_num}] autoload stop")
 
     def _run(self, mms_slot):
+        # A scheduled callback can start after printing or sensor state has
+        # changed, so the earlier execute() checks are not sufficient.
+        if self._should_break or not self._can_execute() \
+                or not self._check_slot(mms_slot):
+            return
         slot_num = mms_slot.get_num()
         with self._execution(slot_num):
             self._mms_autoload(slot_num)
@@ -220,15 +297,26 @@ class MMSAutoload:
 
         mms_slot = self.mms.get_mms_slot(slot_num)
         with mms_slot.slot_rfid.execute():
-            if mms_slot.inlet.is_triggered():
+            if (not self._should_break and not mms_slot.cleanup_required
+                    and mms_slot.inlet.is_triggered()
+                    and not mms_slot.gate.is_triggered()):
+                eject = self.mms.mms_eject
+                if (eject._get_progress() is not None
+                        or self.mms.get_mms_resume().get_exhausted_slot()
+                        is not None):
+                    return
+                eject.check_paths()
+                eject.release_other_selectors(slot_num)
                 try:
-                    self.mms_delivery.autoload_to_gate(slot_num)
+                    self.mms_delivery.autoload_to_gate(
+                        slot_num, should_stop=lambda: self._should_break)
                 except DeliveryTerminateSignal:
                     self.log_info(f"slot[{slot_num}] autoload terminated")
                 except DeliveryFailedError:
                     return
                 except Exception as e:
                     self.log_error(f"slot[{slot_num}] autoload error: {e}")
+                mms_slot.slot_rfid.wait_read(lambda: self._should_break)
 
     # ---- Pre-load ----
     def _can_pre_load(self):
@@ -236,7 +324,10 @@ class MMSAutoload:
             (self.mms.printer_is_shutdown, "printer is shutdown"),
             (self.mms.printer_is_printing, "printer is printing"),
             (self.mms.printer_is_resuming, "printer is resuming"),
-            (self.mms.mms_drive_is_running, "drive is running"),
+            (lambda: self.mms.get_mms_resume().get_exhausted_slot()
+             is not None, "known exhausted filament requires clearance"),
+            (lambda: self.mms.mms_drive_is_running(include_buffer=False),
+                 "drive is running"),
             (self.mms.mms_selector_is_running, "selector is running"),
         ]
         for condition,msg in check_lst:
@@ -246,30 +337,46 @@ class MMSAutoload:
         return True
 
     def mms_pre_load(self, slot_num):
+        def gate_ready():
+            slot = self.mms.get_mms_slot(slot_num)
+            slot.check_load_allowed()
+            if self.mms.get_mms_resume().get_exhausted_slot() is not None:
+                raise MMSException("clear the known exhausted filament first")
+            eject = self.mms.mms_eject
+            if eject._get_progress() is not None:
+                raise MMSException("finish the pending MMS_EJECT first")
+            return slot_num in eject.check_paths()
+
         try:
-            self.mms_delivery.preload_to_gate(slot_num)
+            if gate_ready():
+                self.log_info(f"slot[{slot_num}] already at Gate")
+                return True
+            with self.mms_delivery.maintenance_feeds(slot_num):
+                self.mms_delivery._check_task_cancelled()
+                if not gate_ready():
+                    self.mms.mms_eject.release_other_selectors(slot_num)
+                    self.mms_delivery.preload_to_gate(slot_num)
+            return True
         except DeliveryTerminateSignal:
             self.log_info(f"slot[{slot_num}] pre_load terminated")
         except Exception as e:
             self.log_error(f"slot[{slot_num}] pre_load error: {e}")
+        return False
 
     def cmd_MMS_PRE_LOAD(self, gcmd):
+        self.mms.check_maintenance(gcmd)
         if not self._delay_satisfied():
-            return
-
+            raise gcmd.error(
+                "MMS_PRE_LOAD is not ready; retry after initialization"
+            )
         slot_num = gcmd.get_int("SLOT", minval=0)
         if not self.mms.slot_is_available(slot_num):
-            return
+            raise gcmd.error(f"Invalid MMS slot: {slot_num}")
         if not self._can_pre_load():
-            return
-
-        should_wait = gcmd.get_int("WAIT", default=0)
-        if bool(should_wait):
-            self.mms_pre_load(slot_num)
-        else:
-            self.mms_delivery.deliver_async_task(
-                self.mms_pre_load, {"slot_num":slot_num}
-            )
+            raise gcmd.error("MMS_PRE_LOAD blocked: check the reported state")
+        self.mms_delivery.deliver_task(
+            self.mms_pre_load, {"slot_num": slot_num}, manage_feeds=False,
+            wait=bool(gcmd.get_int("WAIT", default=0)))
 
     # ---- GCode enable/disable ----
     def cmd_MMS_AUTOLOAD_ENABLE(self, gcmd):

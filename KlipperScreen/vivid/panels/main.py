@@ -1,31 +1,28 @@
-# import logging
+import time
 from dataclasses import dataclass
 
 import gi
+
 gi.require_version("Gtk", "3.0")
-from gi.repository import Gtk
+from gi.repository import GLib, Gtk
 
 from ks_includes.screen_panel import ScreenPanel
-
-from vivid.config.vivid_config import VividConfig
-from vivid.config.manager import VividConfigManager
-from vivid.components.button import (
-    VerticalImageButton as VerButton,
-    HorizontalImageButton as HorButton,
-    CountdownButton, 
-    TempDisplayButton,
-    CircleButtonAnime,
-    CircleButtonAnimeMosaic
-)
+from vivid.components.button import CircleButtonStaticSVG, CountdownButton, TempDisplayButton
+from vivid.components.button import HorizontalImageButton as HorButton
+from vivid.components.button import VerticalImageButton as VerButton
 from vivid.components.image import VividImage as VImage
 from vivid.components.label import VividLabel as VLabel
 from vivid.components.utils import (
+    apply_button_css,
     create_popup_window,
     create_section_container,
-    apply_button_css,
-    get_screen_width
+    get_screen_width,
 )
+from vivid.config.vivid_config import VividConfig
 from vivid.controllers.mms import MMSController
+
+# Sentinel to distinguish "argument not passed" from "explicit None/empty"
+_SENTINEL = object()
 
 
 @dataclass(frozen=True)
@@ -42,32 +39,55 @@ class Panel(ScreenPanel):
         """Initialize the ViViD panel"""
         super().__init__(screen, title or _("ViViD"))
         self.slot_buttons = {}
+
         self.temp_btn = None
         self.time_btn = None
         self.stop_heat_btn = None
         self.temp_str = "--"
 
+        # {
+        #     group_num : {
+        #         "area_heat": ...,
+        #         "temp_btn": ...,
+        #         "time_btn": ...,
+        #         "stop_heat_btn": ...,
+        #     }
+        # }
+        self.heat_group = {}
+
+        self.current_group = None
+        self.area_groups = None
+        self.scroll = None
+
+        # SLOT buttons config
+        self.column_one_row = 4
+        self.heat_material_count = 4
+        self.default_color = "#FFFFFF"
+        self.default_material = "N/A"
+
+        # Dryer
+        self._dryer_status = None
+        self._slot_layout = ()
+
         self.mms_selecting_slots = []
-
-        self.cfg_manager = VividConfigManager(
-            self._screen._config.config_path)
-
-        self.build_ui()
-
         self.notify_action = NotifyActionType()
 
         self.mms_controller = MMSController(self._screen)
-        # self.mms_controller.subscribe()
+
+        self.build_ui()
+
         self.mms_controller.register_slot_selected_callback(
             self.select_slot_button)
         self.mms_controller.register_slot_delivery_play_callback(
             self.play_slot_button)
         self.mms_controller.register_slot_delivery_pause_callback(
             self.pause_slot_button)
-        self.mms_controller.register_slot_empty_callback(
-            self.update_slot_empty)
         self.mms_controller.register_heater_temp_callback(
             self.set_current_temp)
+        self.mms_controller.register_slot_color_callback(
+            self._on_slot_color_changed)
+        self.mms_controller.register_slot_material_callback(
+            self._on_slot_material_changed)
 
     def build_ui(self):
         """Build the main UI structure"""
@@ -76,9 +96,16 @@ class Panel(ScreenPanel):
         top_area.attach(self.create_slot_area(), 0, 0, 1, 1)
 
         # Bottom area: Heat+filament, and MMS controls
+        heat_area = self.create_heat_area()
+        mms_area = self.create_mms_area()
+        self.mms_controls = (heat_area, mms_area)
         bottom_area = create_section_container("vvd-main-area-bottom")
-        bottom_area.attach(self.create_heat_area(), 0, 0, 1, 1)
-        bottom_area.attach(self.create_mms_area(), 1, 0, 1, 1)
+        bottom_area.attach(heat_area, 0, 0, 1, 1)
+        bottom_area.attach(mms_area, 1, 0, 1, 1)
+        # bottom_area.attach_next_to(
+        #     mms_area, heat_area,
+        #     Gtk.PositionType.RIGHT, 1, 1
+        # )
 
         # Main grid layout
         main_grid = Gtk.Grid(
@@ -92,160 +119,337 @@ class Panel(ScreenPanel):
 
         self.content.add(main_grid)
 
-    def send_klippy_script(self, script):
-        self.mms_controller.send_script(script)
-
     # ---- Section Creation Methods ----
     def create_slot_area(self):
         """Create the slot selection area with colored buttons"""
-        area = Gtk.Grid(
-            row_homogeneous=True,
-            column_homogeneous=True,
-            hexpand=True,
-            vexpand=True
-        )
-        area.get_style_context().add_class("vvd-slot-area")
+        screen_width = get_screen_width(self)
+        font_size = screen_width / 80
+        scroll_height = screen_width / 4.3
+        slider_radius = screen_width / 256
+        slider_width = screen_width / 256
+        slider_height = screen_width / 11
+        label_margin_start = screen_width / 23
+        label_margin_bottom = screen_width / 90
 
-        for slot_num, color, material in self.cfg_manager.get_slots_configuration():
-            slot_button = self.create_slot_button(slot_num, color, material)
-            area.attach(slot_button, slot_num, 0, 1, 1)
-            # self.mms_update_slot_led(slot_num, color)
+        self.area_groups = self.create_group_area()
 
+        # Scroll
         # scroll = self._gtk.ScrolledWindow()
         scroll = Gtk.ScrolledWindow()
         # Horizontal auto, vertical disable
-        scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
-        scroll.get_style_context().add_class("vvd-slot-area")
-        scroll.add(area)
-        return scroll
+        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        # Default weight: -1
+        scroll.set_size_request(-1, scroll_height)
+        scroll.get_style_context().add_class("vvd-slot-area-scroll")
+
+        css_provider = Gtk.CssProvider()
+        css = f"""
+        .vvd-slot-area-scroll scrollbar slider {{
+            background-color: #FFFFFF;
+            border-radius: {slider_radius}px;
+            min-width: {slider_width}px;
+            min-height: {slider_height}px;
+        }}
+        """
+        css_provider.load_from_data(css.encode())
+        Gtk.StyleContext.add_provider_for_screen(
+            scroll.get_screen(),
+            css_provider,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+        )
+        scroll.add(self.area_groups)
+        self.scroll = scroll
+
+        # Status
+        self.status_label = VLabel(content="", size=font_size, bold=False)
+        self.status_label.set_halign(Gtk.Align.START)
+        self.status_label.set_margin_start(label_margin_start)
+        self.status_label.set_margin_bottom(label_margin_bottom)
+
+        # Combine area
+        area = create_section_container("vvd-slot-area")
+        area.attach(self.scroll, 0, 0, 1, 1)
+        area.attach(self.status_label, 0, 1, 1, 1)
+        return area
+
+    def create_group_area(self, group_num=None):
+        screen_width = get_screen_width(self)
+        arrow_width = screen_width / 26
+        center_width = screen_width / 12
+        center_font_size = screen_width / 60
+        btn_width = screen_width / 22
+
+        has_extend = bool(self.get_mms_groups())
+
+        area_groups = create_section_container("vvd-slot-area-groups")
+
+        mms_slots = self.get_mms_slots()
+        for slot_num, status_dct in mms_slots.items():
+            # Skip not target slots
+            # extend_num is None => Main group
+            if status_dct.get("extend_num") != group_num:
+                continue
+
+            slot_num = int(slot_num)
+            slot_button = self.create_slot_button(
+                slot_num, status_dct.get("filament_color") or self.default_color,
+                status_dct.get("filament_material") or self.default_material)
+            # Position buttons in the grid
+            # No need to sort slot_num, attach by calculation
+            area_groups.attach(
+                slot_button,
+                slot_num % self.column_one_row + 1,
+                # slot_num // self.column_one_row,
+                0,
+                1, 1
+            )
+            # self.mms_controller.update_slot_led(slot_num, color)
+
+        # Extend control
+        if has_extend:
+            # Arrow Up
+            btn_prev = VerButton(
+                image=VImage(
+                    file_name="vivid_arrow_up.svg",
+                    width=arrow_width, height=arrow_width
+                )
+            )
+            btn_prev.get_style_context().add_class("vvd-slot-extend-button")
+            btn_prev.set_size_request(btn_width, -1)
+            btn_prev.connect("clicked", self.show_slots_previous)
+
+            # Center Logo
+            if group_num is not None:
+                extend_label = VLabel(
+                    content=f"#{int(group_num)}",
+                    size=center_font_size,
+                    bold=True
+                )
+                extend_label.get_style_context().add_class("vvd-slot-extend-label")
+                btn_main = VerButton(
+                    image=VImage(
+                        file_name="vivid_extend.svg",
+                        width=center_width, height=center_width
+                    ),
+                    label=extend_label
+                )
+            else:
+                btn_main = VerButton(
+                    image=VImage(
+                        file_name="vivid_extend.svg",
+                        width=center_width, height=center_width
+                    )
+                )
+            btn_main.get_style_context().add_class("vvd-slot-extend-button")
+            btn_main.set_size_request(btn_width, -1)
+
+            # Arrow Down
+            btn_next = VerButton(
+                image=VImage(
+                    file_name="vivid_arrow_down.svg",
+                    width=arrow_width, height=arrow_width
+                )
+            )
+            btn_next.get_style_context().add_class("vvd-slot-extend-button")
+            btn_next.set_size_request(btn_width, -1)
+            btn_next.connect("clicked", self.show_slots_next)
+
+            # Combine
+            extend_ctrl = create_section_container()
+            extend_ctrl.attach(btn_prev, 0, 0, 1, 1)
+            extend_ctrl.attach(btn_main, 0, 1, 1, 1)
+            extend_ctrl.attach(btn_next, 0, 2, 1, 1)
+            area_groups.attach(extend_ctrl, self.column_one_row+1, 0, 1, 1)
+
+        return area_groups
 
     def create_heat_area(self):
         """
-        Create a heat control panel with 
+        Create a heat control panel with
         temperature/time buttons and material selection
         """
-        # Create main grid container
-        area = Gtk.Grid(
-            row_homogeneous=False,      # Rows don't need equal height
-            column_homogeneous=False,   # Columns don't need equal width
-            hexpand=True,               # Expand horizontally to fill available space
-            vexpand=True                # Expand vertically to fill available space
-        )
-        area.get_style_context().add_class("vvd-heat-area")
-
-        # Button image size calculation
+        # Size calculation
         screen_width = get_screen_width(self)
         # Calculate proportional dimensions:
         width = height = screen_width / 35
-        font_size = screen_width / 50
+        font_size_material = screen_width / 50
+        font_size_btn = screen_width / 63
 
-        # Temperature display button (shows current/target temperature)
+        width_btn = screen_width / 3.8
+        height_btn = screen_width / 11
+        spacing_btn = screen_width / 100
+
+        width_m_btn = screen_width / 8
+
+        width_stop_image = screen_width / 18
+        width_stop_btn = screen_width / 9
+
+        area = create_section_container("vvd-heat-area")
+        area_f = create_section_container("vvd-heat-area-f")
+
+        # Temperature display button
+        # Shows current/target temperature
         self.temp_btn = TempDisplayButton(
             image=VImage(file_name="vivid_temp.svg", width=width, height=height),
-            label=VLabel(content=f"Temp {self.get_current_temp()}°C", size=font_size)
+            label=VLabel(content="Temp", size=font_size_btn),
+            temp=VLabel(
+                content=f"{self.get_current_temp()}°C",
+                size=font_size_btn
+            )
         )
         self.temp_btn.get_style_context().add_class("vvd-heat-btn-temp")
+        self.temp_btn.set_size_request(width_btn, height_btn)
+        self.temp_btn.update_spacing(spacing_btn)
         self.temp_btn.refresh_temp(get_temp_func=self.get_current_temp)
 
-        # Time display button (shows elapsed time)
+        # Time display button
+        # Shows elapsed time
         self.time_btn = CountdownButton(
             image=VImage(file_name="vivid_time.svg", width=width, height=height),
-            label=VLabel(content="Time --:--:--", size=font_size)
+            label=VLabel(content="Time", size=font_size_btn),
+            countdown=VLabel(content="--: --: --", size=font_size_btn)
         )
         self.time_btn.get_style_context().add_class("vvd-heat-btn-time")
+        self.time_btn.set_size_request(width_btn, height_btn)
+        self.time_btn.update_spacing(spacing_btn)
 
-        # Position status buttons in the left column
-        area.attach(self.temp_btn, 0, 0, 1, 1)   # Column 0, Row 0
-        area.attach(self.time_btn, 0, 1, 1, 1)   # Column 0, Row 1
+        area_btn = create_section_container()
+        area_btn.attach(self.temp_btn, 0, 0, 1, 1)   # Column 0, Row 0
+        area_btn.attach(self.time_btn, 0, 1, 1, 1)   # Column 0, Row 1
+        area_f.attach(area_btn, 0, 0, 1, 1)
 
         # Filament material buttons
         # Create material buttons with temperature-specific actions
+        area_ma = create_section_container()
         for i, material in enumerate(VividConfig.MATERIALS):
-            btn = VerButton(
-                label=VLabel(content=material.name, size=font_size, bold=True))
-            btn.get_style_context().add_class(material.css_class)
-            apply_button_css(btn, material.css_class, 
-                f"border-bottom-color: {material.display_color};")
+            if i >= self.heat_material_count:
+                break
 
-            # Corrected event binding: capture current temp in closure
-            # The first '_' is btn itself
+            btn = VerButton(
+                label=VLabel(
+                    content=material.name,
+                    size=font_size_material,
+                    bold=True
+                )
+            )
+            btn.get_style_context().add_class(material.css_class)
+            apply_button_css(btn, material.css_class,
+                f"border-bottom-color: {material.display_color};")
+            btn.set_size_request(width_m_btn, -1)
+
             btn.connect(
-                "clicked", 
-                lambda _, t=material.temperature, d=material.heat_duration, c=material.display_color: self.heat_with_temp(t, d, c)
+                "clicked",
+                lambda _, m=material: self.heat_with_temp(m)
             )
 
             # Position buttons in the grid:
             # - Columns 1 & 2 (since i%2: 0 => 1, 1 => 2)
             # - Rows 0 and 1 (i//2: 0-1 => row 0, 2-3 => row 1)
-            area.attach(btn, i % 2 + 1, i // 2, 1, 1)
+            area_ma.attach(btn, i % 2 + 1, i // 2, 1, 1)
+
+        area_f.attach(area_ma, 1, 0, 1, 2)
 
         # Stop heating button
         self.stop_heat_btn = VerButton(
             image=VImage(
                 file_name="vivid_stop_idle.svg",
-                width=width * 2,
-                height=height * 2
+                width=width_stop_image,
+                height=width_stop_image
             ),
-            label=VLabel(content="Stop", size=font_size)
+            label=VLabel(
+                content="Stop",
+                size=font_size_btn,
+                bold=True
+            )
         )
         self.stop_heat_btn.get_style_context().add_class("vvd-stop-heat-btn")
         self.stop_heat_btn.connect("clicked", self.mms_heater_stop)
-        area.attach(self.stop_heat_btn, 3, 0, 1, 2)
+        self.stop_heat_btn.set_size_request(width_stop_btn, -1)
+        self.stop_heat_btn.update_spacing(spacing_btn)
+        area_f.attach(self.stop_heat_btn, 2, 0, 1, 2)
 
+        area.attach(area_f, 0, 0, 1, 1)
         return area
 
     def create_mms_area(self):
         """Create MMS control area"""
-        area = Gtk.Grid(
-            row_homogeneous=True,
-            column_homogeneous=True,
-            hexpand=False,
-            vexpand=False
-        )
-        area.get_style_context().add_class("vvd-mms-area")
-
         # MMS button dimensions
         # width = height = self._gtk.img_scale * self.bts * 4.8
         screen_width = get_screen_width(self)
-        width = height = screen_width / 8
-        font_size = screen_width / 40
+        width = height = screen_width / 18
+        # width_btn = screen_width / 100
+        # height_btn = screen_width / 50
+        font_size_btn = screen_width / 60
+        spacing_btn = screen_width / 100
 
         # Main MMS button
         mms_btn = VerButton(
-            image=VImage(file_name="vivid_mms.svg", width=width, height=height),
-            label=VLabel(content="MMS", size=font_size, bold=True)
+            image=VImage(
+                file_name="vivid_more.svg",
+                width=width,
+                height=height
+            ),
+            label=VLabel(
+                content="More",
+                size=font_size_btn,
+                bold=True
+            )
         )
         mms_btn.get_style_context().add_class("vvd-mms-main-btn")
+        # mms_btn.set_size_request(width_btn, height_btn)
         mms_btn.connect("clicked", lambda w: self.show_mms_window())
+        mms_btn.update_spacing(spacing_btn)
 
-        area.attach(mms_btn, 0, 0, 1, 1)
+        area_f = create_section_container("vvd-mms-area-f")
+        area_f.attach(mms_btn, 0, 0, 1, 1)
+
+        area = create_section_container("vvd-mms-area")
+        area.attach(area_f, 0, 0, 1, 1)
+
         return area
 
     # ---- Slot Functions ----
     def create_slot_button(self, slot_num, color, material):
         """Create a slot button with animation and labeling"""
-        screen_width = get_screen_width(self)
-        diameter = screen_width / 12
-        border_width = diameter / 3.5
-        font_size_num = diameter / 2
-        font_size_material = border_width
+        slot_button = self.slot_buttons.get(slot_num)
+        need_image = color == self.default_color
+        if slot_button:
+            color = slot_button["color"]
+            material = slot_button["material"]
+            need_image = slot_button["need_image"]
 
-        # Create animated circle button
-        # circle = CircleButtonAnime(
-        #     diameter=diameter,
-        #     border_width=border_width,
-        #     border_color=color,
-        #     label=VLabel(content=f"{slot_num}", size=font_size_num, bold=True)
-        # )
-        circle = CircleButtonAnimeMosaic(
+        screen_width = get_screen_width(self)
+        diameter = screen_width / 27
+        border_width = screen_width / 120
+        font_size_num = screen_width / 54
+        font_size_material = screen_width / 65
+        img_width = screen_width / 11
+
+        # Create circle button
+        btn_image = VImage(
+            file_name="vivid_slot_mosaic.svg",
+            width=img_width,
+            height=img_width
+        ) if need_image else None
+
+        circle = CircleButtonStaticSVG(
+            image=btn_image,
             diameter=diameter,
             border_width=border_width,
             border_color=color,
-            label=VLabel(content=f"{slot_num}", size=font_size_num, bold=True)
+            label=VLabel(
+                content=f"{slot_num}",
+                size=font_size_num,
+                bold=True
+            )
         )
 
         # Create bottom label
-        bottom_label = VLabel(content=material, size=font_size_material, bold=True)
+        bottom_label = VLabel(
+            content=material,
+            size=font_size_material,
+            bold=False
+        )
 
         # Compose components
         button_wrapper = Gtk.Box(
@@ -270,8 +474,8 @@ class Panel(ScreenPanel):
         # Apply dynamic CSS
         self.apply_slot_button_color(button, color)
         button.connect(
-            "clicked", 
-            lambda p: self.show_slot_panel(slot_num, color, material)
+            "clicked",
+            lambda _: self.open_slot_panel(slot_num)
         )
 
         # Format dct for update
@@ -279,30 +483,35 @@ class Panel(ScreenPanel):
             "button" : button,
             "circle" : circle,
             "bottom_label" : bottom_label,
-            "is_empty": False
+            "color" : color,
+            "material" : material,
+            "need_image" : need_image
         }
         return button
 
-    # def apply_slot_button_default(self, button):
-    #     base_class = "vvd-slot-button-default"
-    #     # Apply dynamic CSS
-    #     apply_button_css(button, base_class)
-
     def apply_slot_button_color(self, button, color):
-        base_class = "vvd-slot-button"
-        # Apply dynamic CSS
-        if color == "mosaic":
-            apply_button_css(
-                button, base_class, "border-bottom-color: #808080;")
-            apply_button_css(
-                button, f"{base_class}:active", "background-color: #808080;")
-        else:
-            apply_button_css(
-                button, base_class, f"border-bottom-color: {color};")
-            apply_button_css(
-                button, f"{base_class}:active", f"background-color: {color};")
+        """Apply dynamic border-bottom and :active colour to a slot button.
 
-    def show_slot_panel(self, slot_num, color, material):
+        Reuses a single CSS provider per button (stored as _slot_css_provider)
+        to avoid provider accumulation on repeated colour changes.
+        """
+        css = (
+            f".vvd-slot-button {{ border-bottom-color: {color}; }}"
+            f".vvd-slot-button:active {{ background-color: {color}; }}"
+        )
+        provider = Gtk.CssProvider()
+        provider.load_from_data(css.encode())
+        ctx = button.get_style_context()
+        # Replace previous provider if one exists
+        old = getattr(button, '_slot_css_provider', None)
+        if old is not None:
+            ctx.remove_provider(old)
+        ctx.add_provider(provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        ctx.add_class("vvd-slot-button")
+        button._slot_css_provider = provider
+
+    def open_slot_panel(self, slot_num):
+        slot = self.slot_buttons[slot_num]
         self._screen.show_panel(
             "vivid/panels/slot",
             title = f"ViViD SLOT {slot_num}",
@@ -310,137 +519,176 @@ class Panel(ScreenPanel):
             # panel_name is the cache key of KlipperScreen's show_panel()
             panel_name = f"vivid/slot/{slot_num}",
             slot_num = slot_num,
-            color = color,
-            material = material,
-            parent_btn_hook = self.refresh_slot_button,
-            cfg_manager = self.cfg_manager,
+            color = slot["color"],
+            material = slot["material"]
         )
 
-    def refresh_slot_button(self, slot_num, color=None, label=None):
+    def _on_slot_color_changed(self, slot_num, color):
+        """WebSocket-pushed filament colour update — refresh slot button in-place."""
+        slot_button = self.slot_buttons.get(slot_num)
+        if slot_button is None:
+            return
+        self.refresh_slot_button(slot_num, color=color)
+
+    def _on_slot_material_changed(self, slot_num, material):
+        """WebSocket-pushed filament material update — refresh label in-place."""
+        slot_button = self.slot_buttons.get(slot_num)
+        if slot_button is None:
+            return
+        self.refresh_slot_button(slot_num, label=material)
+
+    def refresh_slot_button(self, slot_num, color=_SENTINEL, label=_SENTINEL):
         slot_button = self.slot_buttons[slot_num]
 
-        if color:
-            slot_button["circle"].set_border_color(color)
-            self.apply_slot_button_color(slot_button["button"], color)
+        if color is not _SENTINEL:
+            actual_color = color or self.default_color
+            circle = slot_button["circle"]
+            circle.set_border_color(actual_color)
+            self.apply_slot_button_color(slot_button["button"], actual_color)
+            self.slot_buttons[slot_num]["color"] = actual_color
+            # Only remove mosaic image when a real (non-default) colour is set
+            if actual_color != self.default_color:
+                circle.remove_mosaic_image()
+                self.slot_buttons[slot_num]["need_image"] = False
+            else:
+                self.slot_buttons[slot_num]["need_image"] = True
+                if not circle.has_mosaic_image():
+                    # Image was destroyed by a previous colour — recreate
+                    self._replace_slot_button_in_grid(slot_num)
 
-        if label:
-            slot_button["bottom_label"].set_content(label)
+        if label is not _SENTINEL:
+            actual_label = label or self.default_material
+            slot_button["bottom_label"].set_content(actual_label)
+            self.slot_buttons[slot_num]["material"] = actual_label
 
-    def update_slot_empty(self, slot_num, is_empty):
-        slot_button_dct = self.slot_buttons.get(slot_num)
-        if not slot_button_dct:
-            return
+    def _replace_slot_button_in_grid(self, slot_num):
+        """Recreate a slot button in-place (with mosaic image) and replace in grid."""
+        old_button = self.slot_buttons[slot_num]["button"]
+        new_button = self.create_slot_button(
+            slot_num,
+            self.slot_buttons[slot_num]["color"],
+            self.slot_buttons[slot_num]["material"]
+        )
+        if self.area_groups:
+            col = slot_num % self.column_one_row + 1
+            self.area_groups.remove(old_button)
+            self.area_groups.attach(new_button, col, 0, 1, 1)
+            new_button.show_all()
 
-        if slot_button_dct["is_empty"] == is_empty:
-            return
+    def show_slots_previous(self, widget):
+        if self.scroll and self.area_groups:
+            mms_groups = self.get_mms_groups()
+            group_num = prev_element(mms_groups, self.current_group)
+            if group_num is self.current_group:
+                return
 
-        slot_button_dct["is_empty"] = is_empty
+            self.show_slot_group(group_num)
 
-        if is_empty:
-            # Change label to "Empty"
-            slot_button_dct["bottom_label"].set_content("Empty")
-            # Change circle to mosaic
-            slot_button_dct["circle"].set_border_color("mosaic")
-            self.apply_slot_button_color(slot_button_dct["button"], "mosaic")
+    def show_slots_next(self, widget):
+        if self.scroll and self.area_groups:
+            mms_groups = self.get_mms_groups()
+            group_num = next_element(mms_groups, self.current_group)
+            if group_num is self.current_group:
+                return
+
+            self.show_slot_group(group_num)
+
+    def show_slot_group(self, group_num):
+        container = self.area_groups.get_parent()
+        self.area_groups.destroy()
+        self.slot_buttons.clear()
+        self.current_group = group_num
+        self.area_groups = self.create_group_area(group_num)
+        container.add(self.area_groups)
+        self.area_groups.show_all()
+        self._update_dryer_ui()
+
+    def refresh_slot_layout(self):
+        slots = self.get_mms_slots()
+        layout = tuple(sorted((int(num), data.get("extend_num")) for num, data in slots.items()))
+        if layout != self._slot_layout:
+            self._slot_layout = layout
+            group = self.current_group if self.current_group in self.get_mms_groups() else None
+            self.show_slot_group(group)
+        connection = self.mms_controller.connection
+        if not connection.connected:
+            message = _("Moonraker is disconnected.")
+        elif connection.available is False:
+            message = _("This printer does not have MMS configured.")
+        elif "slots" not in self.mms_controller.get_status():
+            message = _("Waiting for MMS status…")
+        elif not slots:
+            message = _("No MMS slots available.")
         else:
-            # Restore material name
-            material = self.cfg_manager.get_slot_material(slot_num)
-            slot_button_dct["bottom_label"].set_content(material)
-            # Restore color
-            color = self.cfg_manager.get_slot_color(slot_num)
-            slot_button_dct["circle"].set_border_color(color)
-            self.apply_slot_button_color(slot_button_dct["button"], color)
+            message = ""
+        for area in self.mms_controls:
+            area.set_sensitive(not message)
+        self.status_label.set_content(message)
 
     # ---- Heat Functions ----
-    def heat_with_temp(self, temperature, heat_duration, color):
+    # def heat_with_temp(self, temperature, heat_duration, color):
+    #     """
+    #     Handle temperature setting button click
+    #     temp_btn: The BaseImageButton that show the temperature
+    #     time_btn: The BaseImageButton that show the remain time
+    #     """
+    #     # Send command to printer
+    #     self.mms_controller.start_heating(self.current_group, temperature)
+    #     # Update UI
+    #     self.temp_btn.set_target(temperature, color)
+    #     self.time_btn.start_countdown(heat_duration, teardown_func=self._stop_heating)
+    #     if self.stop_heat_btn:
+    #         self.stop_heat_btn.image.update_image_file("vivid_stop_busy.svg")
+
+    def heat_with_temp(self, material):
         """
         Handle temperature setting button click
         temp_btn: The BaseImageButton that show the temperature
         time_btn: The BaseImageButton that show the remain time
-        Args:
-            temperature: Target temperature for the heater
         """
         # Send command to printer
-        self.start_heating(temperature)
-        # Update UI
-        self.temp_btn.set_target(temperature, color)
-        self.time_btn.start_countdown(heat_duration, teardown_func=self.stop_heating)
+        self.mms_controller.start_mms_dryer(material.name, self.current_group)
+
+    def _update_dryer_ui(self):
+        # Update dryer UI
+        mms_dryer_status = self.mms_controller.get_mms_dryer_status(self.current_group)
+        finish_at = mms_dryer_status.get("finish_at")
+        target = mms_dryer_status.get("temperature")
+        if not mms_dryer_status.get("is_heating") or finish_at is None or target is None:
+            self._stop_heating()
+            return
+
+        if self._dryer_status == (finish_at, target):
+            return
+        remaining = finish_at - time.time()
+        if remaining <= 0:
+            self._stop_heating()
+            return
+        self._dryer_status = (finish_at, target)
+        self.temp_btn.set_target(target)
+        self.time_btn.start_countdown(
+            int(remaining),
+            teardown_func=self._stop_heating
+        )
         if self.stop_heat_btn:
             self.stop_heat_btn.image.update_image_file("vivid_stop_busy.svg")
 
-    def start_heating(self, temperature):
-        heater = "ViViD_Dryer"
-        script = f"SET_HEATER_TEMPERATURE HEATER={heater} TARGET={temperature}"
-        self.send_klippy_script(script)
-
-    def stop_heating(self):
-        heater = "ViViD_Dryer"
-        script = f"SET_HEATER_TEMPERATURE HEATER={heater} TARGET=0"
-        self.send_klippy_script(script)
+    def _stop_heating(self):
+        if self._dryer_status is None:
+            return
+        self._dryer_status = None
+        self.temp_btn.reset_target()
+        self.time_btn.stop_countdown()
+        if self.stop_heat_btn:
+            self.stop_heat_btn.image.update_image_file("vivid_stop_idle.svg")
 
     def set_current_temp(self, temp):
         if temp is not None:
-            self.temp_str = f"{temp:.1f}"
+            # self.temp_str = f"{temp:.1f}"
+            self.temp_str = f"{int(temp)}"
 
     def get_current_temp(self):
-        # heater_device = "heater_generic ViViD_Dryer"
-        # # May return empty dict {}
-        # temp = self._printer.get_stat(heater_device, "temperature")
-        # return f"{temp:.1f}" if temp else "--"
         return self.temp_str
-
-    # ---- Delivery Functions ----
-    # def show_delivery_window(self, forward=True):
-    #     """Show filament delivery destination window"""
-    #     action = "Extrude" if forward else "Retract"
-    #     title = f"{action} To"
-
-    #     # Create title label
-    #     screen_width = get_screen_width(self)
-    #     label_title = VLabel(content=title, size=screen_width/30, bold=True)
-
-    #     # Create destination buttons
-    #     button_extruder = HorButton(
-    #         label=VLabel(content="Extruder", size=screen_width/40)
-    #     )
-    #     button_extruder.get_style_context().add_class("vvd-delivery-btn")
-    #     button_extruder.connect("clicked", 
-    #         lambda w: self.delivery_action(forward, "EXTRUDER")
-    #     )
-
-    #     button_buffer = HorButton(
-    #         label=VLabel(content="Buffer", size=screen_width/40)
-    #     )
-    #     button_buffer.get_style_context().add_class("vvd-delivery-btn")
-    #     button_buffer.connect("clicked", 
-    #         lambda w: self.delivery_action(forward, "BUFFER")
-    #     )
-
-    #     button_outside = HorButton(
-    #         label=VLabel(content="Outside", size=screen_width/40)
-    #     )
-    #     button_outside.get_style_context().add_class("vvd-delivery-btn")
-    #     button_outside.connect("clicked", 
-    #         lambda w: self.delivery_action(forward, "OUTSIDE")
-    #     )
-
-    #     # Create grid layout
-    #     grid = Gtk.Grid(
-    #         row_spacing=10,
-    #         halign=Gtk.Align.CENTER
-    #     )
-
-    #     # Layout with centered title
-    #     title_container = Gtk.Box(halign=Gtk.Align.CENTER, hexpand=True)
-    #     title_container.add(label_title)
-
-    #     grid.attach(title_container, 0, 0, 1, 1)
-    #     grid.attach(button_extruder, 0, 1, 1, 1)
-    #     grid.attach(button_buffer, 0, 2, 1, 1)
-    #     grid.attach(button_outside, 0, 3, 1, 1)
-
-    #     # Create popup window
-    #     create_popup_window(title, grid, "vvd-delivery-window")
 
     # ---- MMS Window Functions ----
     def show_mms_window(self):
@@ -455,11 +703,12 @@ class Panel(ScreenPanel):
         buttons = [
             ("mms00", "vivid_mms00", "MMS00\nMMS_STATUS", self.mms_action_c, "MMS_STATUS"),
             ("mms0", "vivid_mms0", "MMS0\nMMS_SAMPLE", self.mms_action_c, "MMS_SAMPLE"),
-            # ("dripload", "vivid_switch", "DRIPLOAD  \nDisable", self.mms_dripload_clicked, None),
             ("mms9", "vivid_walk", "MMS9\nMMS_SLOTS_WALK", self.mms_action, "MMS_SLOTS_WALK"),
             ("mms8", "vivid_loop", "MMS8\nMMS_SLOTS_LOOP", self.mms_action, "MMS_SLOTS_LOOP"),
-            # ("mms999", "vivid_stop", "MMS999\nMMS_STOP      ", self.mms_action, "MMS_STOP"),
-            # ("heater", "vivid_stop", "Heater    \nStop", self.mms_heater_stop, None),
+            (
+                "mms_unselect", "vivid_unselect", "MMS_UNSELECT",
+                self.mms_unselect_action, "MMS_UNSELECT",
+            ),
         ]
 
         # Create and store buttons
@@ -477,16 +726,15 @@ class Panel(ScreenPanel):
             valign=Gtk.Align.CENTER,
             hexpand=True,
             vexpand=True,
+            column_homogeneous=True,
         )
         grid.attach(title_container, 0, 0, 2, 1)
         # Position buttons
         grid.attach(all_buttons["mms00"], 0, 1, 1, 1)
         grid.attach(all_buttons["mms0"], 0, 2, 1, 1)
-        # grid.attach(all_buttons["dripload"], 0, 3, 1, 1)
-        # grid.attach(all_buttons["heater"], 0, 4, 1, 1)
         grid.attach(all_buttons["mms9"], 1, 1, 1, 1)
         grid.attach(all_buttons["mms8"], 1, 2, 1, 1)
-        # grid.attach(all_buttons["mms999"], 1, 3, 1, 1)
+        grid.attach(all_buttons["mms_unselect"], 0, 3, 2, 1)
 
         # Create popup window
         self.close_window_func = create_popup_window(title, grid, "vvd-mms-window")
@@ -505,11 +753,12 @@ class Panel(ScreenPanel):
         # Calculate dimensions
         screen_width = get_screen_width(self)
         width = height = screen_width / 20
+        font_size = screen_width / 60
 
         # Create button
         button = HorButton(
             image=VImage(file_name=f"{icon_name}.svg", width=width, height=height),
-            label=VLabel(content=label_text, size=width/3)
+            label=VLabel(content=label_text, size=font_size)
         )
         # Apply base styling
         button.set_halign(Gtk.Align.START)
@@ -525,100 +774,92 @@ class Panel(ScreenPanel):
         return button
 
     def mms_action(self, script):
-        self.send_klippy_script(script)
+        self.mms_controller.send_script(script)
 
     def mms_action_c(self, script):
-        self.send_klippy_script(script)
+        self.mms_controller.send_script(script)
         self._screen.show_panel("console")
         if self.close_window_func:
             self.close_window_func()
             self.close_window_func = None
 
-    def mms_dripload_clicked(self, widget):
-        return
-        # self.send_klippy_script("MMS_DRIPLOAD SWITCH=0")
+    def mms_unselect_action(self, script):
+        self.mms_controller.send_script(script)
+        # Defer clearing: wait for the WebSocket update to confirm
+        # the selector has actually been released
+        GLib.timeout_add_seconds(1, self._clear_slot_selection)
 
-    def mms_heater_stop(self, widget):
-        self.stop_heating()
-        self.temp_btn.reset_target()
-        self.time_btn.stop_countdown()
-        if self.stop_heat_btn:
-            self.stop_heat_btn.image.update_image_file("vivid_stop_idle.svg")
+    def _clear_slot_selection(self):
+        """Clear focus ring from all currently selected slot buttons."""
+        for slot_num in list(self.mms_selecting_slots):
+            btn = self.slot_buttons.get(slot_num)
+            if btn:
+                btn.get("circle").set_focusing(False)
+        self.mms_selecting_slots.clear()
+        return False  # single-shot timeout
 
-    # ---- MMS LED ----
-    def mms_update_slot_led(self, slot_num, color):
-        """Update hardware LED color (strip '#' prefix)"""
-        # self.color = "#FFFFFF" --> COLOR=FFFFFF
-        color_hex = color[1:] if color.startswith("#") else color
-        script = f"MMS_LED_SET_COLOR SLOT={slot_num} COLOR={color_hex}"
-        self.send_klippy_script(script)
+    def mms_heater_stop(self, widget=None):
+        self.mms_controller.stop_mms_dryer(self.current_group)
 
     # ---- Panel life ----
     def activate(self):
-        # Sync with Klipper state
-        self.sync_with_klipper()
-
+        self.refresh_slot_layout()
         selecting_slot_num = []
+
         mms_selectors = self.mms_controller.get_mms_selectors()
         for index,status_dct in mms_selectors.items():
             # Focusing slot is not None
             slot_num = status_dct.get("focus_slot")
-            if slot_num:
+            if slot_num is not None:
                 selecting_slot_num.append(int(slot_num))
 
-        mms_slots = self.mms_controller.get_mms_slots()
-        for slot_num,status_dct in mms_slots.items():
+        mms_slots = self.get_mms_slots()
+        for slot_num, status_dct in mms_slots.items():
+            slot_num = int(slot_num)
             # Pin selector is triggered
             if status_dct.get("selector"):
-                selecting_slot_num.append(int(slot_num))
+                selecting_slot_num.append(slot_num)
+
+            # Key 'slot_num' is string
+            slot_button = self.slot_buttons.get(slot_num, None)
+            if slot_button:
+                # Update filament material
+                f_material = status_dct.get("filament_material")
+                material = slot_button["material"]
+
+                # if f_material and f_material != material:
+                if f_material != material:
+                    slot_button["material"] = f_material
+                    self.refresh_slot_button(slot_num, label=f_material)
+
+                # Update filament color
+                f_color = status_dct.get("filament_color")
+                color = slot_button["color"]
+
+                # if f_color and f_color != color:
+                if f_color != color:
+                    if f_color:
+                        # Real filament color assigned — destroy mosaic image,
+                        # show colored circle with CSS border
+                        slot_button["color"] = f_color
+                        slot_button["need_image"] = False
+                        self.refresh_slot_button(slot_num, color=f_color)
+                    else:
+                        # Filament color cleared — refresh_slot_button
+                        # handles CSS reset + mosaic restoration
+                        self.refresh_slot_button(slot_num, color=None)
 
         # Play select animation
         for slot_num in set(selecting_slot_num):
             self.select_slot_button(slot_num)
 
-    def sync_with_klipper(self):
-        """Synchronize local configuration with Klipper's MMS state"""
-        slots_data = self.mms_controller.get_mms_slots()
-        if not slots_data:
-            return
-
-        for slot_num_str, slot_data in slots_data.items():
-            slot_num = int(slot_num_str)
-            
-            # Sync Color
-            color = slot_data.get("filament_color")
-            if color:
-                if not color.startswith("#"):
-                    color = f"#{color}"
-                self.cfg_manager.update_slot_color(slot_num, color)
-            
-            # Sync Material
-            material = slot_data.get("filament_material")
-            if material:
-                self.cfg_manager.update_slot_material(slot_num, material)
-            
-            # Sync Details
-            info = slot_data.get("filament_info", {})
-            vendor = info.get("filament_manufacturer", "")
-            name = info.get("filament_type_detailed") or info.get("color_name_a") or ""
-            nozzle_temp = info.get("nozzle_temp", "")
-            bed_temp = info.get("bed_temperature", "")
-            
-            self.cfg_manager.update_slot_details(
-                slot_num, vendor, name, nozzle_temp, bed_temp
-            )
-            
-            # Update UI button state
-            is_empty = slot_data.get("is_empty", False)
-            self.update_slot_empty(slot_num, is_empty)
-            
-            # If not empty, force refresh to show correctly synced values
-            if not is_empty and color and material:
-                self.refresh_slot_button(slot_num, color, material)
+        # Update dryer UI
+        self._update_dryer_ui()
 
     def deactivate(self):
-        for slot_num in self.slot_buttons:
-            self.pause_slot_button(slot_num)
+        return
+        # for slot_num in self.slot_buttons:
+        #     self.pause_slot_button(slot_num)
 
     def process_update(self, action, data):
         # logging.info(f"#### action:{action}, data:{data}")
@@ -627,6 +868,9 @@ class Panel(ScreenPanel):
             return
 
         if action == self.notify_action.status:
+            if "mms" in data or not self._slot_layout:
+                self.refresh_slot_layout()
+                self._update_dryer_ui()
             self.mms_controller.handle_notify_status_update(data)
 
         # if action == self.notify_action.proc_stat:
@@ -668,22 +912,28 @@ class Panel(ScreenPanel):
             btn.get("circle").set_focusing(True)
 
     def play_slot_button(self, slot_num, reverse=False):
-        btn = self.slot_buttons.get(slot_num, None)
-        if btn:
-            btn.get("circle").start_animation(reverse)
-        # self.slot_buttons[slot_num]["circle"].start_animation(reverse)
+        return
+        # btn = self.slot_buttons.get(slot_num, None)
+        # if btn:
+        #     btn.get("circle").start_animation(reverse)
 
     def pause_slot_button(self, slot_num):
-        btn = self.slot_buttons.get(slot_num, None)
-        if btn:
-            btn.get("circle").stop_animation()
-        # self.slot_buttons[slot_num]["circle"].stop_animation()
+        return
+        # btn = self.slot_buttons.get(slot_num, None)
+        # if btn:
+        #     btn.get("circle").stop_animation()
 
     def kick_slot_button(self, slot_num):
-        btn = self.slot_buttons.get(slot_num, None)
-        if btn:
-            btn.get("circle").kick_animation()
-        # self.slot_buttons[slot_num]["circle"].kick_animation()
+        return
+        # btn = self.slot_buttons.get(slot_num, None)
+        # if btn:
+        #     btn.get("circle").kick_animation()
+
+    def get_mms_slots(self):
+        return self.mms_controller.get_mms_slots()
+
+    def get_mms_groups(self):
+        return self.mms_controller.get_extend_nums()
 
 
 # ==== Utils ====
@@ -691,3 +941,31 @@ def find_period(n):
     period = 4
     index = (n // period) * period
     return [index, index+1, index+2, index+3]
+
+
+def prev_element(lst, i):
+    if i is None:
+        if lst:
+            return lst[-1]
+        return None
+    try:
+        idx = lst.index(i)
+    except ValueError:
+        return None
+    if idx == 0:
+        return None
+    return lst[idx - 1]
+
+
+def next_element(lst, i):
+    if i is None:
+        if lst:
+            return lst[0]
+        return None
+    try:
+        idx = lst.index(i)
+    except ValueError:
+        return None
+    if idx == len(lst) - 1:
+        return None
+    return lst[idx + 1]

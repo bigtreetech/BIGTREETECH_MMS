@@ -1,11 +1,12 @@
 # Support for MMS SLOT led
 #
-# Copyright (C) 2024-2025 Garvey Ding <garveyding@gmail.com>
+# Copyright (C) 2024-2026 Garvey Ding <garveyding@gmail.com>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 
 from ..adapters import printer_adapter
-from ..hardware.led import MMSLedEffect, MMSLedEvent
+from ..hardware.led import MMSLedEvent
+from ..hardware.led_effect import MMSLedEffect
 
 
 class SlotLED:
@@ -37,7 +38,9 @@ class SlotLED:
         return self.led_effect is not None
 
     def notify(self):
-        if self._effect_playing() or self._rfid_led_keep():
+        if self._rfid_has_set_color and self.mms_slot.is_empty():
+            self._rfid_has_set_color = False
+        if self._effect_playing() or self._rfid_has_set_color:
             return
 
         printer_adapter.send_event(
@@ -59,14 +62,6 @@ class SlotLED:
         self.log_info(f"slot[{self.slot_num}] new led color: {color}")
 
     # ---- RFID Support ----
-    def _rfid_led_keep(self):
-        if not self.mms_slot.is_empty() \
-            and not self.mms_slot.is_new_insert() \
-            and self._rfid_has_set_color:
-            # Slot has RFID tag read, don't update LED
-            return True
-        return False
-
     def rfid_set_color(self, color):
         self._rfid_has_set_color = True
         self.change_color(color)

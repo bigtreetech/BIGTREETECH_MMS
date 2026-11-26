@@ -4,9 +4,13 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 
-from dataclasses import dataclass, fields
+from dataclasses import dataclass
 
-from .config import PrinterConfig, StringList
+from .config import (
+    get_buffer_config_float,
+    PrinterConfig,
+    StringList,
+)
 from ..adapters import printer_adapter
 
 
@@ -20,8 +24,16 @@ class PrinterMMSExtendConfig(PrinterConfig):
 
     outlet: str = "buffer_2:PA5"
     buffer_runout: str = "buffer_2:PA4"
+    buffer_target_percentage: float = 50.0
+    buffer_max_velocity: float = 80.0
+    buffer_max_accel: float = 120.0
 
     dryer_heater: str = "ViViD_Dryer_2"
+
+    def get_type_handlers(self):
+        handlers = super().get_type_handlers()
+        handlers[float] = get_buffer_config_float
+        return handlers
 
 
 class MMSExtend:

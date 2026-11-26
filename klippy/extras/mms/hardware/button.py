@@ -10,7 +10,6 @@ from dataclasses import dataclass
 from ..adapters import (
     buttons_adapter,
     pins_adapter,
-    printer_adapter,
     query_endstops_adapter,
 )
 
@@ -53,6 +52,8 @@ class MMSButton:
         self.state = self.state_release
         # Previous state
         self.state_prev = None
+        self.change_count = 0
+        self._state_eventtime = float("-inf")
         # self.last_trigger_at = 0
         # self.last_release_at = 0
 
@@ -72,6 +73,10 @@ class MMSButton:
             self.mcu_endstop, self.mcu_pin)
 
     def handle_state_updated(self, eventtime, state):
+        # Order button reports and queries by actual response receive time.
+        if eventtime < self._state_eventtime:
+            return
+        self._state_eventtime = eventtime
         # self.log_info(f"{self.mcu_pin} state:{state}"
         #               f" state_t:{self.state_trigger}")
         if state == self.state_trigger:
@@ -117,6 +122,8 @@ class MMSButton:
     # ==== State Transition Methods ====
     def _update_state(self, new_state):
         """Update state with history tracking"""
+        if self.state != new_state:
+            self.change_count += 1
         self.state_prev = self.state
         self.state = new_state
 

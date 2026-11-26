@@ -1,3 +1,4 @@
+#######################################################################
 #
 # ███╗    ███╗ ███╗    ███╗ ██████████╗ ██████████╗
 # ████╗  ████║ ████╗  ████║ ██╔═══════╝ ██╔═══════╝
@@ -9,17 +10,17 @@
 # MMS Extend Module Configuration
 #
 #--------------------------- Extended MCU ---------------------------#
-[mcu buffer_2]
-serial:   /dev/serial/by-id/usb-Klipper_stm32f042x6_buffer_2-if00   # USB connection
+[mcu __MCU_BUFFER__]
+__MCU_BUFFER_TYPE__: __MCU_BUFFER_PROP__
 
-[mcu vivid_2]
-serial:   /dev/serial/by-id/usb-Klipper_stm32g0b1xx_vivid_2-if00     # USB connection
+[mcu __MCU_VIVID__]
+__MCU_VIVID_TYPE__: __MCU_VIVID_PROP__
 
 #--------------------------- Extended MMS Stepper ---------------------------#
-[manual_stepper selector_stepper_2]
-step_pin:          vivid_2:PD3    # Step pin
-dir_pin:           vivid_2:PD2    # Direction pin
-enable_pin:        !vivid_2:PB4   # Enable pin (active low)
+[manual_stepper __STEPPER_SELECTOR__]
+step_pin:          __MCU_VIVID__:PD3    # Step pin
+dir_pin:           __MCU_VIVID__:PD2    # Direction pin
+enable_pin:        !__MCU_VIVID__:PB4   # Enable pin (active low)
 microsteps:        16             # Microsteps setting
 # rotation_distance: 360            # Rotation distance (degrees), full_steps_per_rotation=200
 rotation_distance: 400            # Rotation distance (degrees), full_steps_per_rotation=200
@@ -27,91 +28,91 @@ gear_ratio:        2.5:1          # Gear ratio (effective rotation_distance: 400
 velocity:          100            # Velocity (mm/s)
 accel:             100            # Acceleration (mm/s²)
 
-[tmc2209 manual_stepper selector_stepper_2]
-uart_pin:          vivid_2:PB3    # UART communication pin
+[tmc2209 manual_stepper __STEPPER_SELECTOR__]
+uart_pin:          __MCU_VIVID__:PB3    # UART communication pin
 run_current:       1.0            # Run current (A)
 stealthchop_threshold: 0          # 0=spreadCycle, 999999=stealthChop mode
 
-[manual_stepper drive_stepper_2]
-step_pin:          vivid_2:PB6    # Step pin
-dir_pin:           vivid_2:PB5    # Direction pin
-enable_pin:        !vivid_2:PB8   # Enable pin (active low)
+[manual_stepper __STEPPER_DRIVE__]
+step_pin:          __MCU_VIVID__:PB6    # Step pin
+dir_pin:           __MCU_VIVID__:PB5    # Direction pin
+enable_pin:        !__MCU_VIVID__:PB8   # Enable pin (active low)
 microsteps:        16             # Microsteps setting
 rotation_distance: 360            # Rotation distance (degrees)
 gear_ratio:        43:1           # Gear ratio (effective rotation_distance: 8.372)
 velocity:          100            # Velocity (mm/s)
 accel:             100            # Acceleration (mm/s²)
 
-[tmc2209 manual_stepper drive_stepper_2]
-uart_pin:          vivid_2:PB7    # UART communication pin
+[tmc2209 manual_stepper __STEPPER_DRIVE__]
+uart_pin:          __MCU_VIVID__:PB7    # UART communication pin
 run_current:       0.7            # Run current (A)
 stealthchop_threshold: 0          # 0=spreadCycle, 999999=stealthChop mode
 
 #--------------------------- Extended LED ---------------------------#
-[neopixel vivid_rgb_2_1]
-pin:          vivid_2:PC6   # Data pin
+[neopixel __RGB_VIVID_0__]
+pin:          __MCU_VIVID__:PC6   # Data pin
 color_order:  GRB           # Color order
 initial_RED:  0.01          # Initial red brightness
 chain_count:  14            # Number of LEDs in chain
 
-[neopixel vivid_rgb_2_2]
-pin:          vivid_2:PC7   # Data pin
+[neopixel __RGB_VIVID_1__]
+pin:          __MCU_VIVID__:PC7   # Data pin
 color_order:  GRB           # Color order
 initial_BLUE: 0.01          # Initial blue brightness
 chain_count:  14            # Number of LEDs in chain
 
 #--------------------------- Extended RFID ---------------------------#
-[mms rfid mfrc522_2_0]
-cs_pin:          vivid_2:PB14         # Chip select pin
+[mms rfid __RFID_MFRC522_0__]
+cs_pin:          __MCU_VIVID__:PB14         # Chip select pin
 spi_bus:         spi2_PB2_PB11_PB10   # SPI bus configuration
 slots:           0,1                  # Associated slot numbers (SLOT0, SLOT1)
 rfid_data_file:  rfid/rfid_write.json # RFID data file
 
-[mms rfid mfrc522_2_1]
-cs_pin:          vivid_2:PA8          # Chip select pin
+[mms rfid __RFID_MFRC522_1__]
+cs_pin:          __MCU_VIVID__:PA8          # Chip select pin
 spi_bus:         spi2_PB2_PB11_PB10   # SPI bus configuration
 slots:           2,3                  # Associated slot numbers (SLOT2, SLOT3)
 rfid_data_file:  rfid/rfid_write.json # RFID data file
 
 #--------------------------- Extend Heater Configuration ---------------------------#
 # Controller Fan
-[controller_fan my_controller_fan_2]
-pin:     vivid_2:PA14   # Fan control pin
-stepper: manual_stepper selector_stepper_2, manual_stepper drive_stepper_2   # Monitored steppers
+[controller_fan __CTRL_FAN__]
+pin:     __MCU_VIVID__:PA14   # Fan control pin
+stepper: manual_stepper __STEPPER_SELECTOR__, manual_stepper __STEPPER_DRIVE__   # Monitored steppers
 
 # Temperature Sensors
-[temperature_sensor _PTC_Temper_2]
-sensor_pin:      vivid_2:PA4    # Sensor input pin
+[temperature_sensor __PTC_TEMPER__]
+sensor_pin:      __MCU_VIVID__:PA4    # Sensor input pin
 sensor_type:     Generic 3950   # Sensor type
 pullup_resistor: 2200           # Pullup resistor value (ohms)
 min_temp:        -20            # Minimum temperature (C)
 max_temp:        100            # Maximum temperature (C)
 
-[temperature_sensor ViViD_Dryer_L_2]
+[temperature_sensor __DRYER_VIVID_L__]
 sensor_type:          AHT3X          # Sensor type
-i2c_mcu:              vivid_2        # I2C MCU
+i2c_mcu:              __MCU_VIVID__        # I2C MCU
 # i2c_bus:            i2c1_PA9_PA10
-i2c_software_scl_pin: vivid_2:PA9      # Software I2C clock pin
-i2c_software_sda_pin: vivid_2:PA10     # Software I2C data pin
+i2c_software_scl_pin: __MCU_VIVID__:PA9      # Software I2C clock pin
+i2c_software_sda_pin: __MCU_VIVID__:PA10     # Software I2C data pin
 aht10_report_time:    5              # Report interval (seconds)
 min_temp:             -20            # Minimum temperature (C)
 max_temp:             100            # Maximum temperature (C)
 
-[temperature_sensor ViViD_Dryer_R_2]
+[temperature_sensor __DRYER_VIVID_R__]
 sensor_type:          AHT3X          # Sensor type
-i2c_mcu:              vivid_2        # I2C MCU
+i2c_mcu:              __MCU_VIVID__        # I2C MCU
 # i2c_bus:            i2c3_PA7_PA6
-i2c_software_scl_pin: vivid_2:PA7      # Software I2C clock pin
-i2c_software_sda_pin: vivid_2:PA6      # Software I2C data pin
+i2c_software_scl_pin: __MCU_VIVID__:PA7      # Software I2C clock pin
+i2c_software_sda_pin: __MCU_VIVID__:PA6      # Software I2C data pin
 aht10_report_time:    5              # Report interval (seconds)
 min_temp:             -20            # Minimum temperature (C)
 max_temp:             100            # Maximum temperature (C)
 
 # Heater Configuration
-[heater_generic ViViD_Dryer_2]
-heater_pin:         vivid_2:PC14              # Heater control pin
+[heater_generic __DRYER_VIVID__]
+heater_pin:         __MCU_VIVID__:PC14              # Heater control pin
 sensor_type:        temperature_combined      # Combined sensor type
-sensor_list:        aht10 ViViD_Dryer_L_2, aht10 ViViD_Dryer_R_2   # Combined sensors
+sensor_list:        aht10 __DRYER_VIVID_L__, aht10 __DRYER_VIVID_R__   # Combined sensors
 combination_method: max                     # Combination method
 maximum_deviation:  100                     # Maximum temperature deviation
 control:            pid                     # Control method
@@ -122,28 +123,28 @@ min_temp:           -20                     # Minimum temperature (C)
 max_temp:           65                      # Maximum temperature (C)
 
 # Heater Verification
-[verify_heater ViViD_Dryer_2]
+[verify_heater __DRYER_VIVID__]
 max_error:       300    # Maximum temperature error
 check_gain_time: 600    # Gain check timeout (seconds)
 hysteresis:      10     # Hysteresis value
 heating_gain:    1      # Minimum heating gain
 
 # Heater Fan
-[heater_fan ViViD_Dryer_Fan_2]
-pin:            vivid_2:PC15   # Fan control pin
+[heater_fan __DRYER_VIVID_FAN__]
+pin:            __MCU_VIVID__:PC15   # Fan control pin
 max_power:      0.3            # Maximum power (0.0-1.0)
 shutdown_speed: 0              # Speed at shutdown (0.0-1.0)
-heater:         ViViD_Dryer_2  # Associated heater
+heater:         __DRYER_VIVID__  # Associated heater
 
 #--------------------------- Extended Slots ---------------------------#
-[mms slot 4]
+[mms slot __SLOT_A__]
 # Pins mapping
-selector:     !vivid_2:PD0     # Selector endstop pin
-inlet:        vivid_2:PA0      # Inlet sensor pin
-gate:         buffer_2:PA0     # Buffer gate pin
+selector:     !__MCU_VIVID__:PD0     # Selector endstop pin
+inlet:        __MCU_VIVID__:PA0      # Inlet sensor pin
+gate:         __MCU_BUFFER__:PA0     # Buffer gate pin
 
 # LED mapping
-led_name:     neopixel vivid_rgb_2_1   # LED controller name
+led_name:     neopixel __RGB_VIVID_0__   # LED controller name
 chip_index:   0,1,2,3,4,5,6            # LED indices for this slot
 brightness:   1.0                      # Brightness level (1.0 = 100%)
 
@@ -151,7 +152,7 @@ brightness:   1.0                      # Brightness level (1.0 = 100%)
 autoload_enable: 1                      # Autoload enable (0=disable, 1=enable)
 
 # RFID
-rfid_name:       mms rfid mfrc522_2_0   # RFID reader name
+rfid_name:       mms rfid __RFID_MFRC522_0__   # RFID reader name
 rfid_enable:     0                      # RFID enable (0=disable, 1=enable)
 rfid_detect_duration: 50                # RFID detection duration (seconds)
 rfid_read_duration:   4                 # RFID read duration (seconds)
@@ -162,14 +163,14 @@ endless_with_slot:               5    # Linked endless backup slot number
 # Selector refine calibration
 selector_calibrate_distance:     2.0  # Stepper Selector calibrate distance (mm)
 
-[mms slot 5]
+[mms slot __SLOT_B__]
 # Pins mapping
-selector:     !vivid_2:PA15    # Selector endstop pin
-inlet:        vivid_2:PA1      # Inlet sensor pin
-gate:         buffer_2:PA1     # Buffer gate pin
+selector:     !__MCU_VIVID__:PA15    # Selector endstop pin
+inlet:        __MCU_VIVID__:PA1      # Inlet sensor pin
+gate:         __MCU_BUFFER__:PA1     # Buffer gate pin
 
 # LED mapping
-led_name:     neopixel vivid_rgb_2_1   # LED controller name
+led_name:     neopixel __RGB_VIVID_0__   # LED controller name
 chip_index:   7,8,9,10,11,12,13        # LED indices for this slot
 brightness:   1.0                      # Brightness level (1.0 = 100%)
 
@@ -177,7 +178,7 @@ brightness:   1.0                      # Brightness level (1.0 = 100%)
 autoload_enable: 1                      # Autoload enable (0=disable, 1=enable)
 
 # RFID
-rfid_name:       mms rfid mfrc522_2_0   # RFID reader name
+rfid_name:       mms rfid __RFID_MFRC522_0__   # RFID reader name
 rfid_enable:     0                      # RFID enable (0=disable, 1=enable)
 rfid_detect_duration: 50                # RFID detection duration (seconds)
 rfid_read_duration:   4                 # RFID read duration (seconds)
@@ -188,14 +189,14 @@ endless_with_slot:               6    # Linked endless backup slot number
 # Selector refine calibration
 selector_calibrate_distance:     2.0  # Stepper Selector calibrate distance (mm)
 
-[mms slot 6]
+[mms slot __SLOT_C__]
 # Pins mapping
-selector:     !vivid_2:PD1     # Selector endstop pin
-inlet:        vivid_2:PA2      # Inlet sensor pin
-gate:         buffer_2:PA2     # Buffer gate pin
+selector:     !__MCU_VIVID__:PD1     # Selector endstop pin
+inlet:        __MCU_VIVID__:PA2      # Inlet sensor pin
+gate:         __MCU_BUFFER__:PA2     # Buffer gate pin
 
 # LED mapping
-led_name:     neopixel vivid_rgb_2_2   # LED controller name
+led_name:     neopixel __RGB_VIVID_1__   # LED controller name
 chip_index:   0,1,2,3,4,5,6            # LED indices for this slot
 brightness:   1.0                      # Brightness level (1.0 = 100%)
 
@@ -203,7 +204,7 @@ brightness:   1.0                      # Brightness level (1.0 = 100%)
 autoload_enable: 1                      # Autoload enable (0=disable, 1=enable)
 
 # RFID
-rfid_name:       mms rfid mfrc522_2_1   # RFID reader name
+rfid_name:       mms rfid __RFID_MFRC522_1__   # RFID reader name
 rfid_enable:     0                      # RFID enable (0=disable, 1=enable)
 rfid_detect_duration: 50                # RFID detection duration (seconds)
 rfid_read_duration:   4                 # RFID read duration (seconds)
@@ -214,14 +215,14 @@ endless_with_slot:               7    # Linked endless backup slot number
 # Selector refine calibration
 selector_calibrate_distance:     2.0  # Stepper Selector calibrate distance (mm)
 
-[mms slot 7]
+[mms slot __SLOT_D__]
 # Pins mapping
-selector:     !vivid_2:PC13    # Selector endstop pin
-inlet:        vivid_2:PA3      # Inlet sensor pin
-gate:         buffer_2:PA3     # Buffer gate pin
+selector:     !__MCU_VIVID__:PC13    # Selector endstop pin
+inlet:        __MCU_VIVID__:PA3      # Inlet sensor pin
+gate:         __MCU_BUFFER__:PA3     # Buffer gate pin
 
 # LED mapping
-led_name:     neopixel vivid_rgb_2_2   # LED controller name
+led_name:     neopixel __RGB_VIVID_1__   # LED controller name
 chip_index:   7,8,9,10,11,12,13        # LED indices for this slot
 brightness:   1.0                      # Brightness level (1.0 = 100%)
 
@@ -229,7 +230,7 @@ brightness:   1.0                      # Brightness level (1.0 = 100%)
 autoload_enable: 1                      # Autoload enable (0=disable, 1=enable)
 
 # RFID
-rfid_name:       mms rfid mfrc522_2_1   # RFID reader name
+rfid_name:       mms rfid __RFID_MFRC522_1__   # RFID reader name
 rfid_enable:     0                      # RFID enable (0=disable, 1=enable)
 rfid_detect_duration: 50                # RFID detection duration (seconds)
 rfid_read_duration:   4                 # RFID read duration (seconds)
@@ -241,10 +242,14 @@ endless_with_slot:               4    # Linked endless backup slot number
 selector_calibrate_distance:     2.0  # Stepper Selector calibrate distance (mm)
 
 #--------------------------- Extended Group ---------------------------#
-[mms extend 2]
-slot:            4,5,6,7                                # Slot numbers (SLOT4 through SLOT7)
-selector_name:   manual_stepper selector_stepper_2      # Selector stepper name
-drive_name:      manual_stepper drive_stepper_2         # Drive stepper name
-outlet:          buffer_2:PA5                           # Buffer outlet and full sensor
-buffer_runout:   buffer_2:PA4                           # Buffer runout sensor
-dryer_heater:    ViViD_Dryer_2                          # Dryer heater
+[mms extend __EXT_ID__]
+slot:            __SLOT_NUMS__                                # Slot numbers
+selector_name:   manual_stepper __STEPPER_SELECTOR__      # Selector stepper name
+drive_name:      manual_stepper __STEPPER_DRIVE__         # Drive stepper name
+outlet:          __MCU_BUFFER__:PA5                           # Buffer outlet and full sensor
+buffer_runout:   __MCU_BUFFER__:PA4                           # Buffer runout sensor
+buffer_target_percentage: 50.0  # Reserve target for this extension's buffer
+# Normal buffer feed limits; tune to the feeder mechanics.
+buffer_max_velocity: 80.0  # mm/s, independent of load/unload
+buffer_max_accel: 120.0    # mm/s^2, includes reserve correction
+dryer_heater:    __DRYER_VIVID__                          # Dryer heater

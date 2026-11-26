@@ -41,6 +41,9 @@ class MoveType:
     MANUAL_MOVE: str = "manual_move"
     MANUAL_HOME: str = "manual_home"
     DRIP_MOVE: str = "drip_move"
+    BUFFER_FEED: str = "buffer_feed"
+    EXTRUDER_SYNC: str = "extruder_sync"
+    EXTRUDER_MOVE: str = "extruder_move"
 
 
 @dataclass(frozen=True)
@@ -72,7 +75,6 @@ class MoveDispatch:
 
         self.steps_moved = 0
         self.distance_moved = 0.0
-        self._completion = None
 
         printer_adapter.register_klippy_ready(
             self._handle_klippy_ready)
@@ -124,33 +126,16 @@ class MoveDispatch:
         self.stepper.set_trapq(prev_trapq)
 
     # ---- Reactor waiting ----
-    def _query_current(self):
-        return self.reactor.monotonic()
-
-    def _wait(self, delay):
-        end_time = self._query_current() + delay
-        self._completion = self.reactor.completion()
-
-        while 1:
-            # Complete
-            result = self._completion.wait(end_time)
-            if result is not None:
+    def _wait_for_completion(self, end_print_time):
+        # Drain accepted steps before releasing the motor, even after cancel.
+        mcu = self.stepper.get_mcu()
+        while not printer_adapter.is_shutdown():
+            eventtime = self.reactor.monotonic()
+            remaining = end_print_time - mcu.estimated_print_time(eventtime)
+            if remaining <= 0.:
                 break
-            # Timeout
-            if self._query_current() > end_time:
-                self._completion.complete(False)
-                break
-
-        self._completion = None
-        duration = self._query_current() + delay - end_time
-        return duration
-
-    def _complete_waiting(self, result=False):
-        if self._completion:
-            self.reactor.async_complete(
-                completion = self._completion,
-                result = result
-            )
+            self.reactor.pause(eventtime + min(remaining, 0.1))
+        toolhead_a.check_motion(require_owner=False)
 
     # ---- Get status ----
     def get_steps_moved(self):
@@ -165,21 +150,53 @@ class ManualMoveDispatch(MoveDispatch):
         super().__init__(stepper)
         self.move_type = MoveType.MANUAL_MOVE
 
-    def execute(self, print_time, distance, speed, accel):
+    def execute(self, print_time, distance, speed, accel, background=False):
         # Save original trapq and replace with ours
         prev_trapq = self._replace_trapq()
-        self._prepare_tracking()
+        end_print_time = None
+        completed = False
         try:
-            # Process move jobs in trapq, return end_print_time
-            return motion_queuing_a.move(
+            self._prepare_tracking()
+            end_print_time = motion_queuing_a.setup_trapq(
                 self.trapq, print_time, distance, abs(speed), abs(accel))
+            if background:
+                # Klipper generates this selector trajectory in its usual
+                # windows alongside the print. Keep it attached until drain.
+                motion_queuing_a.note_mcu_movequeue_activity(end_print_time)
+            else:
+                motion_queuing_a.process_trapq(self.trapq, end_print_time)
+            completed = True
+            return end_print_time
         except Exception as e:
             self.log_error(f"{self.move_type} error: {str(e)}")
-            # Return print_time as end_print_time
-            return print_time
+            raise
         finally:
-            self._recover_trapq(prev_trapq)
-            self._update_tracking()
+            try:
+                stop_time = end_print_time
+                if end_print_time is not None and not completed:
+                    stop_time = min(end_print_time, max(
+                        print_time, motion_queuing_a.get_last_step_gen_time()))
+                try:
+                    if not completed:
+                        # Setup/flush can fail with an unsubmitted queue tail.
+                        motion_queuing_a.wipe_trapq(self.trapq)
+                finally:
+                    if stop_time is not None:
+                        # Keep ownership until every accepted step has drained.
+                        self._wait_for_completion(stop_time)
+                        if (background and completed
+                                and motion_queuing_a.get_last_step_gen_time()
+                                < stop_time):
+                            raise CommandError(
+                                "selector steps were not generated in time")
+            finally:
+                try:
+                    if background and completed:
+                        motion_queuing_a.wipe_trapq(self.trapq)
+                finally:
+                    self._recover_trapq(prev_trapq)
+                    if end_print_time is not None:
+                        self._update_tracking()
 
 
 class ManualHomeDispatch(MoveDispatch):
@@ -205,7 +222,8 @@ class ManualHomeDispatch(MoveDispatch):
                 toolhead = ms_adapter.get_manual_stepper()
             )
             # Return triggered_pos => [distance, 0., 0., 0.]
-            hmove.homing_move(
+            motion_queuing_a.run_native_motion(
+                hmove.homing_move,
                 movepos = [distance, 0., 0., 0.],
                 speed = abs(speed),
                 triggered = trigger,
@@ -224,6 +242,7 @@ class ManualHomeDispatch(MoveDispatch):
             raise
         except Exception as e:
             self.log_error(f"{self.move_type} error: {str(e)}")
+            raise
         finally:
             self._update_tracking()
             # Truncate mcu_pin list
@@ -239,41 +258,60 @@ class DripMoveDispatch(MoveDispatch):
         self.move_type = MoveType.DRIP_MOVE
         self._drip_completion = None
 
-    def execute(self, print_time, distance, speed, accel):
-        # Save original trapq and replace with ours
+    def execute(self, print_time, distance, speed, accel,
+                check=None, stop_when=None):
         prev_trapq = self._replace_trapq()
-        self._prepare_tracking()
+        error = None
+        end_print_time = None
+        dispatch = self
+
+        class Completion:
+            def test(inner):
+                nonlocal error
+                try:
+                    if check is not None:
+                        check()
+                    if stop_when is not None and stop_when():
+                        dispatch.terminate()
+                except Exception as e:
+                    error = e
+                    dispatch.terminate()
+                return dispatch._drip_completion.test()
+
+            def wait(inner, waketime):
+                return dispatch._drip_completion.wait(waketime)
+
         try:
-            # Setup move jobs in trapq, return end_print_time
-            end_print_time = motion_queuing_a.setup_trapq(
-                self.trapq, print_time, distance, abs(speed), abs(accel)
-            )
-            # Setup reactor completion
+            self._prepare_tracking()
             self._drip_completion = self.reactor.completion()
-            # Mark beginning
-            begin_at = self._query_current()
-
-            # Drip updates to motors, move begin
+            completion = (Completion() if check is not None
+                          or stop_when is not None else self._drip_completion)
+            end_print_time = motion_queuing_a.setup_trapq(
+                self.trapq, print_time, distance, abs(speed), abs(accel))
             motion_queuing_a.drip_update_time(
-                print_time, end_print_time, self._drip_completion
-            )
-            # Move finish, clear remaining movement in trapq
-            motion_queuing_a.wipe_trapq(self.trapq)
-            # Truncate reactor completion
-            self._drip_completion = None
-
-            # Calculate duration
-            duration = self._query_current() - begin_at
-            # Return exactly end_print_time
-            return min(print_time+duration, end_print_time)
-
+                print_time, end_print_time, completion)
         except Exception as e:
             self.log_error(f"{self.move_type} error: {str(e)}")
-            # Return print_time as end_print_time
-            return print_time
+            raise
         finally:
-            self._recover_trapq(prev_trapq)
-            self._update_tracking()
+            try:
+                stop_time = None
+                if end_print_time is not None:
+                    stop_time = min(end_print_time, max(
+                        print_time, motion_queuing_a.get_last_step_gen_time()))
+                try:
+                    motion_queuing_a.wipe_trapq(self.trapq)
+                finally:
+                    if stop_time is not None:
+                        self._wait_for_completion(stop_time)
+            finally:
+                self._drip_completion = None
+                self._recover_trapq(prev_trapq)
+                if end_print_time is not None:
+                    self._update_tracking()
+        if error is not None:
+            raise error
+        return stop_time
 
     def terminate(self, result=True):
         if self._drip_completion:
@@ -283,6 +321,61 @@ class DripMoveDispatch(MoveDispatch):
 # ------------------------------
 # Core Stepper Class
 # ------------------------------
+class BufferMoveDispatch(MoveDispatch):
+    """Own only the feeder queue; append before native step generation."""
+    def start(self, print_time):
+        self.move_type = MoveType.BUFFER_FEED
+        self._prepare_tracking()
+        self.previous_trapq = self._replace_trapq()
+        self.attached = True
+        self.print_time = print_time
+        self.position = self.velocity = 0.
+        self.stopping = False
+        self.stop_time = None
+
+    def append(self, step_gen_time, velocity):
+        now = self.stepper._cal_print_time()
+        if self.print_time < now:
+            # An idle interval is stationary, not a backlog to regenerate.
+            self.print_time = motion_queuing_a.calc_step_gen_restart(now)
+            self.velocity = 0.
+        # This Cartesian feeder needs no PA/shaper pre-scan. A tail beyond the
+        # native frontier could remain ungenerated while the flush timer sleeps.
+        end = step_gen_time
+        while not self.stopping and self.print_time < end - 1.e-9:
+            duration = min(.05, end - self.print_time)
+            target, accel = velocity(
+                self.print_time, self.position, self.velocity, duration)
+            self.print_time, self.position, self.velocity = (
+                motion_queuing_a.append_velocity(
+                    self.trapq, self.print_time, self.position, self.velocity,
+                    target, accel, duration=duration))
+            self.stepper._forward = self.velocity >= 0.
+        self.stepper._end_print_time = min(self.print_time, step_gen_time)
+
+    def stop(self):
+        # A failed wipe is retryable; a successful cut keeps its exact time.
+        # No core flush/wait here: this can run inside assert_no_pause.
+        self.stopping = True
+        if self.stop_time is None:
+            end = min(self.print_time,
+                      motion_queuing_a.get_last_step_gen_time())
+            motion_queuing_a.wipe_trapq(self.trapq)
+            self.stop_time = end
+            self.stepper._end_print_time = end
+
+    def finish(self):
+        self.stop()
+        try:
+            self._wait_for_completion(self.stepper._end_print_time)
+        finally:
+            # Cancellation after the physical drain must not skip cleanup.
+            # A failed queue restore retains ownership for a repaired retry.
+            self._recover_trapq(self.previous_trapq)
+            self.attached = False
+            self._update_tracking()
+
+
 class MMSStepper:
     """Main stepper motor control class"""
     def __init__(self, name):
@@ -314,6 +407,7 @@ class MMSStepper:
             MoveType.MANUAL_MOVE: ManualMoveDispatch(self),
             MoveType.MANUAL_HOME: ManualHomeDispatch(self),
             MoveType.DRIP_MOVE: DripMoveDispatch(self),
+            MoveType.BUFFER_FEED: BufferMoveDispatch(self),
         }
 
         # Register connect handler to printer
@@ -524,28 +618,54 @@ class MMSStepper:
     def is_running(self):
         return self._is_running
 
-    def _set_is_running(self):
+    def _set_is_running(self, move_type, forward=None, slot_num=None,
+                        print_time=None):
         if self.is_running():
-            return
+            msg = f"[{self.mms_name}] is still running ({self.move_type})"
+            if self.move_type == MoveType.EXTRUDER_SYNC \
+                and self.move_status == MoveStatus.ERROR:
+                slot = self._focus_slot
+                msg += ("; sync cleanup pending; retry "
+                        "MMS_SLOT_EXTRUDER_UNSYNC SLOT="
+                        f"{slot if slot is not None else '<slot>'}")
+            raise CommandError(msg)
 
         self._is_running = True
-        printer_adapter.notify_mms_stepper_running()
-        self._reset_move_status(MoveStatus.MOVING)
+        self.move_type = move_type
+        if forward is not None:
+            self._forward = forward
+        if slot_num is not None:
+            self._focus_slot = slot_num
+        try:
+            self._reset_move_status(MoveStatus.MOVING)
+            printer_adapter.notify_mms_stepper_running()
+            if print_time is None:
+                self.enable()
+            else:
+                self.enable(print_time)
+        except Exception:
+            self.move_status = MoveStatus.ERROR
+            self._free_is_running()
+            raise
 
     def _free_is_running(self):
         if not self.is_running():
             return
 
         self._is_running = False
+        if self.move_status == MoveStatus.MOVING:
+            # Not completed/terminated/error, mark as expired.
+            self._update_move_status(MoveStatus.EXPIRED)
         printer_adapter.notify_mms_stepper_idle()
 
-        if self.move_status == MoveStatus.MOVING:
-            # Not completed/terminated/error, mark as expired
-            self._update_move_status(MoveStatus.EXPIRED)
-
     def handle_is_not_running(self):
-        self.log_info(f"[{self.mms_name}] handle is not running")
-        self._free_is_running()
+        if self.move_type == MoveType.BUFFER_FEED:
+            # An armed supply queue may intentionally remain stationary.
+            return
+        # Unchanged commanded steps do not prove that the motion owner exited.
+        self.log_warning(
+            f"[{self.mms_name}] no step change observed; "
+            f"still owned by {self.move_type}")
 
     def _cal_enable_print_time(self):
         # Warning, don't adde interval with print_time here
@@ -557,9 +677,10 @@ class MMSStepper:
         # )
         return max(cal_pt, th_pt)
 
-    def enable(self):
+    def enable(self, print_time=None):
         if not stepper_enable_a.is_motor_enabled(self.name):
-            pt = self._cal_enable_print_time()
+            pt = (self._cal_enable_print_time() if print_time is None
+                  else print_time)
             res = stepper_enable_a.enable(self.name, pt)
             if res:
                 self.log_info(f"[{self.mms_name}] enable at"
@@ -584,30 +705,14 @@ class MMSStepper:
         self.move_end_steps = self.get_steps_moved()
 
     @contextmanager
-    def _stepper_is_running(self, move_type):
-        """
-        Context manager to set the stepper motor running state.
-        This method sets the `_is_running` attribute to True when the context
-        is entered, and sets it back to False when the context is exited.
-        Usage:
-            with self._stepper_is_running():
-                # Code to execute while the stepper is running
-        Yields:
-            None
-        """
-        if self.is_running():
-            self.log_warning(f"[{self.mms_name}] is still running...")
-            # Even confident is true, still yield to make sure generator return
-            # yield at least once
-            yield False
-            return
-
-        self.move_type = move_type
-        self._set_is_running()
-        # Force enable stepper before run
-        self.enable()
+    def _stepper_is_running(self, move_type, forward=None, slot_num=None,
+                            print_time=None):
+        self._set_is_running(move_type, forward, slot_num, print_time)
         try:
-            yield True
+            yield
+        except Exception:
+            self.move_status = MoveStatus.ERROR
+            raise
         finally:
             self._free_is_running()
 
@@ -637,8 +742,11 @@ class MMSStepper:
             # Wait to flush print_time
             self.pause(wait_time)
             # Calculate new print_time
-            print_time = self._cal_print_time()
-        return print_time
+            print_time = self._cal_print_time(add_interval=True)
+        # A different motor or E may have advanced native generation while
+        # this owner waited. Never append before that committed frontier.
+        return max(print_time, motion_queuing_a.calc_step_gen_restart(
+            self._cal_print_time()))
 
     def _sync_print_time(self):
         toolhead_pt = toolhead_a.get_print_time()
@@ -653,71 +761,80 @@ class MMSStepper:
 
     # ---- Public Movement Methods ----
     # -- Manual Move --
-    def manual_move(self, distance, speed, accel):
+    def manual_move(self, distance, speed, accel, slot_num=None, *,
+                    background=False, check=None):
         if not distance:
             return
 
         mv_type = MoveType.MANUAL_MOVE
-        self._forward = distance >= 0
-
-        try:
-            with self._stepper_is_running(mv_type) as can_run:
-                if not can_run:
-                    return
-
-                print_time = self._adjust_print_time()
+        # The active Klipper queue provides the scheduling lead for this
+        # move. Avoid the standalone interval and a toolhead lookahead flush.
+        start_time = None
+        if background:
+            restart = motion_queuing_a.calc_step_gen_restart(
+                self._cal_print_time())
+            start_time = max(restart, self._end_print_time)
+        with self._stepper_is_running(
+            mv_type, forward=distance >= 0, slot_num=slot_num,
+            print_time=start_time
+        ):
+            try:
+                print_time = (self._adjust_print_time()
+                              if start_time is None else start_time)
+                toolhead_a.check_motion(require_owner=False)
+                if check is not None:
+                    check()
                 dispatch = self.get_dispatch(mv_type)
                 self._end_print_time = dispatch.execute(
-                    print_time, distance, speed, accel
+                    print_time, distance, speed, accel, background=background
                 )
-        except Exception as e:
-            self.move_status = MoveStatus.ERROR
-            raise
-        finally:
-            # self.log_status()
-            self._log_review(mv_type, distance)
+            finally:
+                self._log_review(mv_type, distance)
 
     # -- Manual Home --
     def manual_home(
-        self, distance, speed, accel, forward, trigger, endstop_pair_lst
+        self, distance, speed, accel, forward, trigger, endstop_pair_lst,
+        slot_num=None, check_endstop=None
     ):
         if not distance:
             return
 
         mv_type = MoveType.MANUAL_HOME
         distance = abs(distance) if forward else -abs(distance)
-        self._forward = forward
-
-        try:
-            with self._stepper_is_running(mv_type) as can_run:
-                if not can_run:
-                    return self.move_status
-
+        with self._stepper_is_running(
+            mv_type, forward=forward, slot_num=slot_num
+        ):
+            try:
                 self._can_calibrate = True
                 self._sync_print_time()
+                toolhead_a.check_motion(require_owner=False)
                 dispatch = self.get_dispatch(mv_type)
 
                 endstop_name = dispatch.execute(
                     distance, speed, accel, trigger, endstop_pair_lst
                 )
-
-                if endstop_name is not None \
-                    and self.get_distance_moved() == 0:
-                    # Endstop is triggered without moving
+                if check_endstop is not None:
+                    # Native homing has drained its movement. Read the target
+                    # before releasing this owner; button edges alone may be
+                    # delayed, or may describe the opposite transition.
+                    reached = check_endstop()
+                    if not self.move_is_terminated():
+                        if reached:
+                            self.complete_manual_home()
+                        else:
+                            self.move_status = MoveStatus.MOVING
+                elif (endstop_name is not None
+                      and self.get_distance_moved() == 0):
                     self.complete_manual_home()
+                if self.move_is_completed() and self.get_distance_moved() == 0:
                     self._can_calibrate = False
+            except (CommandError, MCUError) as e:
+                gcode_adapter.respond_error(e)
+                raise
+            finally:
+                self.log_status()
 
-            return self.move_status
-
-        except (CommandError, MCUError) as e:
-            self.move_status = MoveStatus.ERROR
-            gcode_adapter.respond_error(e)
-            raise
-        except Exception as e:
-            self.move_status = MoveStatus.ERROR
-            raise
-        finally:
-            self.log_status()
+        return self.move_status
 
     def complete_manual_home(self):
         if not self.is_running():
@@ -732,32 +849,36 @@ class MMSStepper:
         return self._can_calibrate
 
     # -- Drip Move --
-    def drip_move(self, distance, speed, accel):
+    def drip_move(self, distance, speed, accel, slot_num=None,
+                  check=None, stop_when=None):
         if not distance:
             return
-
         mv_type = MoveType.DRIP_MOVE
-        self._forward = True if distance >= 0 else False
+        with self._stepper_is_running(
+                mv_type, forward=distance >= 0, slot_num=slot_num):
+            print_time = self._adjust_print_time()
+            toolhead_a.check_motion(require_owner=False)
+            dispatch = self.get_dispatch(mv_type)
+            options = {}
+            if check is not None or stop_when is not None:
+                options = dict(check=check, stop_when=stop_when)
+            self._end_print_time = dispatch.execute(
+                print_time, distance, speed, accel, **options)
 
-        try:
-            with self._stepper_is_running(mv_type) as can_run:
-                if not can_run:
-                    return
+    def get_executed_position(self, print_time):
+        stepper = self.get_mcu_stepper()
+        return (stepper.get_past_mcu_position(print_time)
+                * stepper.get_step_dist())
 
-                print_time = self._adjust_print_time()
-                dispatch = self.get_dispatch(mv_type)
-                self._end_print_time = dispatch.execute(
-                    print_time, distance, speed, accel
-                )
-        except Exception as e:
-            self.move_status = MoveStatus.ERROR
-            raise
-        # finally:
-        #     # self.log_status()
-        #     # self._log_review(mv_type, distance)
+    def get_generated_position(self):
+        stepper = self.get_mcu_stepper()
+        return stepper.get_mcu_position() * stepper.get_step_dist()
 
     # -- Terminate --
     def terminate_moving(self):
+        if self.is_running() and self.move_type == MoveType.BUFFER_FEED:
+            self.get_dispatch(MoveType.BUFFER_FEED).stop()
+            return
         if not self.is_running() \
             or self.move_type not in (
                 MoveType.MANUAL_HOME,
@@ -789,45 +910,115 @@ class MMSDrive(MMSStepper):
         self.interval_time = self.s_config.interval_time_drive
 
         self._org_trapq = None
+        self._borrowed_feed_generation = None
         self._is_syncing = False
 
-    def sync_to_extruder(self):
-        if self._is_syncing:
-            return
+    def start_buffer_feed(self, slot_num):
+        now = self._cal_print_time()
+        start = motion_queuing_a.calc_step_gen_restart(now)
+        self._set_is_running(MoveType.BUFFER_FEED, slot_num=slot_num,
+                             print_time=start)
+        try:
+            self.get_dispatch(MoveType.BUFFER_FEED).start(start)
+        except Exception:
+            self.move_status = MoveStatus.ERROR
+            self._free_is_running()
+            raise
 
-        # Flush Toolhead
+    def append_buffer_feed(self, step_gen_time, velocity):
+        self.get_dispatch(MoveType.BUFFER_FEED).append(step_gen_time, velocity)
+
+    def stop_buffer_feed(self, wait=True):
+        if self.move_type != MoveType.BUFFER_FEED or not self.is_running():
+            return True
+        dispatch = self.get_dispatch(MoveType.BUFFER_FEED)
+        dispatch.stop()
+        if not wait:
+            return False
+        try:
+            dispatch.finish()
+        except Exception:
+            self.move_status = MoveStatus.ERROR
+            raise
+        finally:
+            if not dispatch.attached:
+                self._free_is_running()
+        return True
+
+    def sync_to_extruder(self, slot_num=None, feed_generation=None):
+        # Explicit SYNC lasts until UNSYNC or the exhausted strand is released.
+        if (self._is_syncing and self.move_type == MoveType.EXTRUDER_SYNC
+                and self.move_status != MoveStatus.ERROR):
+            return
+        self._set_is_running(MoveType.EXTRUDER_MOVE, slot_num=slot_num)
+        self._borrowed_feed_generation = feed_generation
+        try:
+            self._sync_to_extruder()
+            self.move_type = MoveType.EXTRUDER_SYNC
+        except Exception:
+            self.move_status = MoveStatus.ERROR
+            self._finish_extruder_sync()
+            raise
+
+    def _sync_to_extruder(self):
         toolhead_a.flush_step_generation()
         extruder = toolhead_a.get_extruder()
-
-        # Setup MCU_Stepper
         mcu_stepper = self.get_mcu_stepper()
         mcu_stepper.set_position([extruder.last_position, 0., 0.])
         self._org_trapq = mcu_stepper.set_trapq(extruder.get_trapq())
-
-        # Flush motion queuing
-        motion_queuing_a.check_step_generation_scan_windows()
         self._is_syncing = True
+        motion_queuing_a.check_step_generation_scan_windows()
 
     def unsync_to_extruder(self):
-        if not self._is_syncing:
-            return
+        # A manual command must not detach an active charge/eject/purge scope.
+        if self.is_running() and self.move_type != MoveType.EXTRUDER_SYNC:
+            raise CommandError(
+                f"[{self.mms_name}] is still running ({self.move_type})")
+        if self._is_syncing:
+            self.move_type = MoveType.EXTRUDER_MOVE
+            self._finish_extruder_sync()
+            generation = self._borrowed_feed_generation
+            self._borrowed_feed_generation = None
+            return generation
 
-        # Flush Toolhead
-        toolhead_a.flush_step_generation()
-
-        # Setup MCU_Stepper
-        mcu_stepper = self.get_mcu_stepper()
-        mcu_stepper.set_trapq(self._org_trapq)
-
-        # Flush motion queuing
-        motion_queuing_a.check_step_generation_scan_windows()
-        self._is_syncing = False
+    def _finish_extruder_sync(self):
+        try:
+            if self._is_syncing:
+                # A fault can follow accepted E before its normal wait. Keep
+                # drive ownership until that physical segment has drained;
+                # cancellation must not bypass this cleanup wait.
+                toolhead_a.wait_moves(check=False)
+                toolhead_a.flush_step_generation()
+                self.get_mcu_stepper().set_trapq(self._org_trapq)
+                self._is_syncing = False
+                motion_queuing_a.check_step_generation_scan_windows()
+        except Exception as e:
+            self.move_status = MoveStatus.ERROR
+            if self._is_syncing:
+                slot = self._focus_slot
+                raise CommandError(
+                    f"[{self.mms_name}] sync cleanup failed; drive remains "
+                    "synchronized; correct the error and retry "
+                    "MMS_SLOT_EXTRUDER_UNSYNC SLOT="
+                    f"{slot if slot is not None else '<slot>'}: {e}") from e
+            raise
+        finally:
+            if self._is_syncing:
+                # Cleanup did not detach the trapq. Keep ownership, but let an
+                # explicit UNSYNC retry after this failed scope has unwound.
+                self.move_type = MoveType.EXTRUDER_SYNC
+            else:
+                self._free_is_running()
 
     @contextmanager
     def sync_with_extruder(self):
-        self.sync_to_extruder()
-        printer_adapter.notify_mms_stepper_running()
+        self._set_is_running(MoveType.EXTRUDER_MOVE)
+        self._borrowed_feed_generation = None
         try:
+            self._sync_to_extruder()
             yield
+        except Exception:
+            self.move_status = MoveStatus.ERROR
+            raise
         finally:
-            self.unsync_to_extruder()
+            self._finish_extruder_sync()

@@ -30,6 +30,12 @@ class VirtualSDCardAdapter(BaseAdapter):
     def is_active(self):
         return self.get_current_status().get("is_active")
 
+    def is_cmd_from_sd(self):
+        # Query the command source, not the file's printing state. A manual
+        # command can run while a file is active; do not load an absent SD.
+        virtual_sd = self.printer.lookup_object(self._obj_name, None)
+        return virtual_sd is not None and virtual_sd.is_cmd_from_sd()
+
     ###########################
     # --
     # Klipper Pause Flow

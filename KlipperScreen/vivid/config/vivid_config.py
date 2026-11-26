@@ -1,4 +1,3 @@
-import logging
 from dataclasses import dataclass
 from random import choice
 
@@ -77,17 +76,24 @@ class VividConfig:
     MATERIALS = [
         MaterialConfig(
             name="ABS",
-            display_color=ColorConfig.green,
+            display_color=ColorConfig.orange,
             temperature=55,
             heat_duration=14400, # 4 Hours
             css_class="vvd-filament-btn-abs"
         ),
         MaterialConfig(
             name="ASA",
-            display_color=ColorConfig.orange,
+            display_color=ColorConfig.green,
             temperature=55,
             heat_duration=14400, # 4 Hours
             css_class="vvd-filament-btn-asa"
+        ),
+        MaterialConfig(
+            name="PETG",
+            display_color=ColorConfig.purple,
+            temperature=50,
+            heat_duration=14400, # 4 Hours
+            css_class="vvd-filament-btn-petg"
         ),
         MaterialConfig(
             name="PLA",
@@ -97,11 +103,11 @@ class VividConfig:
             css_class="vvd-filament-btn-pla"
         ),
         MaterialConfig(
-            name="PETG",
-            display_color=ColorConfig.purple,
-            temperature=50,
+            name="PLA-CF",
+            display_color=ColorConfig.cyan,
+            temperature=45,
             heat_duration=14400, # 4 Hours
-            css_class="vvd-filament-btn-petg"
+            css_class="vvd-filament-btn-pla"
         ),
     ]
 
@@ -117,7 +123,7 @@ class VividConfig:
     def get_material(cls, name):
         """Get material configuration by name"""
         for material in cls.MATERIALS:
-            if material.name == name:
+            if material.name.strip() == name:
                 return material
         raise ValueError(f"Material not found: {name}")
 

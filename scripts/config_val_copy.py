@@ -105,6 +105,9 @@ if __name__ == "__main__":
             old_mms = None
 
         for section in new_mms.fileconfig.sections():
+            # The shipped macro definitions belong to the new MMS code.
+            if section.startswith("gcode_macro "):
+                continue
             for option in new_mms.fileconfig.options(section):
                 try:
                     new_val = new_mms.fileconfig.get(section, option)
@@ -130,10 +133,10 @@ if __name__ == "__main__":
                         continue
                     filename = new_mms.get_filename(section, option)
                     pos = new_mms.get_option_val_position(filename, section, option, False)
-                    config_replace_option_val(filename, pos, old_val)
+                    if not config_replace_option_val(filename, pos, old_val):
+                        raise RuntimeError(f"Could not migrate [{section}] {option}")
 
-                    # print(f"Changed option '{option}' in section '[{section}]' in '{filename}'")
-                    # print(f"Position: {pos}")
-                    # print(f"from default\n{new_val}\nto\n{old_val}\n")
+        # A failed migration must never replace the installed configuration.
+        ConfigEditor(new_filename)
     except Exception as e:
-        print(f"Error[config_copy]: {e}") # print(f"{type(e).__name__})
+        sys.exit(f"Error[config_copy]: {e}")

@@ -8,7 +8,10 @@ from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from dataclasses import dataclass
 
-from ..adapters import printer_adapter
+from ..adapters import (
+    printer_adapter,
+    query_endstops_adapter,
+)
 from ..hardware.button import (
     MMSButtonGate,
     MMSButtonInlet,
@@ -22,11 +25,6 @@ def check_ready(method):
             return
         return method(self, *args, **kwargs)
     return wrapper
-
-
-@dataclass(frozen=True)
-class SlotPinConfig:
-    break_delay: float = 0.1 # Seconds
 
 
 @dataclass(frozen=True)
@@ -140,6 +138,17 @@ class BaseSlotPin(ABC):
     def is_released(self):
         return self.pin_obj.is_released() if self.pin_obj else False
 
+    def refresh_state(self):
+        """Read the live endstop into the existing button state owner."""
+        if self.pin_obj is None:
+            return
+        endstop = self.get_endstop()
+        eventtime = printer_adapter.get_reactor().monotonic()
+        print_time = endstop.get_mcu().estimated_print_time(eventtime)
+        received_at, state = query_endstops_adapter.query_state(
+            endstop, print_time)
+        self.pin_obj.handle_state_updated(received_at, state)
+
     def is_new_triggered(self):
         return self.pin_obj.is_new_triggered() if self.pin_obj else False
 
@@ -148,6 +157,9 @@ class BaseSlotPin(ABC):
 
     def get_state(self):
         return self.pin_obj.get_state() if self.pin_obj else None
+
+    def get_change_count(self):
+        return self.pin_obj.change_count if self.pin_obj else None
 
     def get_endstop(self):
         return self.pin_obj.get_endstop() if self.pin_obj else None
@@ -216,24 +228,11 @@ class BaseSlotPin(ABC):
             mcu_trsync._oid,
             mcu_trsync.REASON_HOST_REQUEST
         ])
-        # ret = mcu_trsync._trsync_query_cmd.send([
-        #     mcu_trsync._oid,
-        #     mcu_trsync.REASON_HOST_REQUEST
-        # ])
-        # self.log_info(f"trsync query return:{ret}")
-
-        # Update mms_stepper status to terminated before pause
+        # Request termination without yielding or tearing down Klipper's
+        # dispatch here. The active home_wait owns that cleanup; newer
+        # Klipper trsync response registrations cannot be stopped twice.
         self._terminate_stepper_moving()
-        # End up waiting
         self.stop_waiting()
-
-        # Wait a while for stepper's step count cleaning
-        reactor = printer_adapter.get_reactor()
-        reactor.pause(reactor.monotonic() + SlotPinConfig.break_delay)
-
-        # Teardown dispatch
-        mcu_dispatch.stop()
-
         return True
 
 
@@ -296,25 +295,25 @@ class SlotPinInlet(BaseSlotPin):
     @check_ready
     def trigger(self, mcu_pin):
         self._log_state(self.pin_state.triggered)
-        self.mms_slot.slot_led.notify()
 
         if self.is_waiting():
             self.mms_slot.complete_drive_moving()
             self.stop_waiting()
 
+        self.mms_slot.update_filament_presence(pin_changed=True)
         if self.mms_slot.autoload_is_enabled():
             self._autoload()
-        self.mms_slot.update_lane_data_empty_state()
 
     @check_ready
     def release(self, mcu_pin):
         self._log_state(self.pin_state.released)
-        self.mms_slot.slot_led.notify()
+        self.mms_slot.update_cleanup_state()
 
         if self.is_waiting():
             self.mms_slot.complete_drive_moving()
             self.stop_waiting()
-        self.mms_slot.update_lane_data_empty_state()
+
+        self.mms_slot.update_filament_presence(pin_changed=True)
 
     def _autoload(self):
         mms_autoload = printer_adapter.get_mms_autoload()
@@ -334,52 +333,27 @@ class SlotPinGate(BaseSlotPin):
     @check_ready
     def trigger(self, mcu_pin):
         self._log_state(self.pin_state.triggered)
-        self.mms_slot.slot_led.notify()
         if self.is_waiting():
             self.mms_slot.complete_drive_moving()
             self.stop_waiting()
-        self.mms_slot.update_lane_data_empty_state()
+        self.mms_slot.update_filament_presence(pin_changed=True)
 
     @check_ready
     def release(self, mcu_pin):
         self._log_state(self.pin_state.released)
-        self.mms_slot.slot_led.notify()
+        self.mms_slot.update_cleanup_state()
         if self.is_waiting():
             self.mms_slot.complete_drive_moving()
             self.stop_waiting()
-        self.mms_slot.update_lane_data_empty_state()
+        self.mms_slot.update_filament_presence(pin_changed=True)
 
 
-class SlotPinGateInvert(BaseSlotPin):
-    def __init__(self, mms_slot, mcu_pin):
-        mcu_pin_inv = mcu_pin.lstrip("!") \
-            if mcu_pin.startswith("!") \
-            else "!"+mcu_pin
-        super().__init__(mms_slot, mcu_pin_inv, PinType().gate_invert)
-
-    def _setup_pin(self):
-        self.pin_obj = MMSButtonGate(self.mcu_pin)
-        self.pin_obj.register_trigger_callback(self.trigger)
-        self.pin_obj.register_release_callback(self.release)
-
-    @check_ready
-    def trigger(self, mcu_pin):
-        self._log_state(self.pin_state.triggered)
-        if self.is_waiting():
-            self.mms_slot.complete_drive_moving()
-            self.stop_waiting()
-            return True
-        return False
-
-    @check_ready
-    def release(self, mcu_pin):
-        self._log_state(self.pin_state.released)
-        if self.is_waiting():
-            self.mms_slot.complete_drive_moving()
-            self.stop_waiting()
-            return True
-        return False
-
+# class SlotPinGateInvert(BaseSlotPin):
+#     def __init__(self, mms_slot, mcu_pin):
+#         mcu_pin_inv = mcu_pin.lstrip("!") \
+#             if mcu_pin.startswith("!") \
+#             else "!"+mcu_pin
+#         super().__init__(mms_slot, mcu_pin_inv, PinType().gate_invert)
 
 class SlotPinBufferRunout(BaseSlotPin):
     def __init__(self, mms_slot, mcu_pin):
@@ -431,7 +405,6 @@ class SlotPinOutlet(BaseSlotPin):
             self.mms_slot.complete_drive_moving()
             self.stop_waiting()
             return True
-        self.mms_slot.update_lane_data_empty_state()
         return False
 
     @check_ready
@@ -441,7 +414,6 @@ class SlotPinOutlet(BaseSlotPin):
             self.mms_slot.complete_drive_moving()
             self.stop_waiting()
             return True
-        self.mms_slot.update_lane_data_empty_state()
         return False
 
 
@@ -464,7 +436,6 @@ class SlotPinEntry(BaseSlotPin):
             self.mms_slot.complete_drive_moving()
             self.stop_waiting()
             return True
-        self.mms_slot.update_lane_data_empty_state()
         return False
 
     @check_ready
@@ -474,7 +445,6 @@ class SlotPinEntry(BaseSlotPin):
             # self.mms_slot.complete_drive_moving()
             self.stop_waiting()
             return True
-        self.mms_slot.update_lane_data_empty_state()
         return False
 
     def set_stepper(self, mms_stepper):

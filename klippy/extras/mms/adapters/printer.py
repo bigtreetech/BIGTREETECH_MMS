@@ -47,6 +47,9 @@ class PrinterAdapter(BaseAdapter):
         self.klippy_event = KlippyEvent()
         self.mms_module = MMSModule()
 
+        self._is_connected = False
+        self._is_ready = False
+
     # ---- Register event handler to printer ----
     def register_event(self, event, handler):
         self.printer.register_event_handler(event, handler)
@@ -98,6 +101,23 @@ class PrinterAdapter(BaseAdapter):
 
     def send_event(self, event, *params):
         return self.printer.send_event(event, *params)
+
+    # def call_remote_method(self, method_name, params):
+    #     webhooks = self.printer.get_obj("webhooks")
+    #     webhooks.call_remote_method(method_name, **params)
+
+    # ---- Status ----
+    def set_is_connected(self):
+        self._is_connected = True
+
+    def set_is_ready(self):
+        self._is_ready = True
+
+    def is_connected(self):
+        return self._is_connected
+
+    def is_ready(self):
+        return self._is_ready
 
     # ---- Quick methods for MMS ----
     def register_mms_extend(self, handler):

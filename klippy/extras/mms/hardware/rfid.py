@@ -7,7 +7,7 @@
 import json
 import os
 from contextlib import contextmanager
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, fields
 
 from ...bus import MCU_SPI_from_config
 
@@ -589,9 +589,11 @@ class MMSRfid:
             self._is_reading = True
             self.log_info(
                 f"RFID[{self.name}] read initiated in the backend")
+            return True
 
         except Exception as e:
             self.log_error(f"RFID[{self.name}] read_begin error:{e}")
+            return False
 
     def read_end(self):
         if not self._is_reading:

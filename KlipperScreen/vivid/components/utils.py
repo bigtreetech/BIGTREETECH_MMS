@@ -1,9 +1,8 @@
 import colorsys
-import itertools
-import logging
 import math
 
 import gi
+
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gdk, Gtk
 
@@ -91,7 +90,7 @@ def convert_css_to_gtk3(css_content):
 
 
 # ---- UI Utility Methods ----
-def create_section_container(style_class):
+def create_section_container(style_class=None):
     """Create a container section with uniform styling"""
     grid = Gtk.Grid(
         row_homogeneous=False,
@@ -99,7 +98,8 @@ def create_section_container(style_class):
         hexpand=True,
         vexpand=True
     )
-    grid.get_style_context().add_class(style_class)
+    if style_class:
+        grid.get_style_context().add_class(style_class)
     return grid
 
 
@@ -190,7 +190,7 @@ def convert_seconds_to_hms(seconds):
     hours = seconds // 3600
     minutes = (seconds % 3600) // 60
     seconds_remaining = seconds % 60
-    return f"{hours:02d}:{minutes:02d}:{seconds_remaining:02d}"
+    return f"{hours:02d}: {minutes:02d}: {seconds_remaining:02d}"
 
 
 # ---- Color Methods ----
@@ -220,19 +220,11 @@ def lighten_color(hex_color: str, amount: float = 0.3) -> str:
         str: Lightened hex color
     """
     r, g, b = hex_to_rgb(hex_color)
-    h, l, s = colorsys.rgb_to_hls(r, g, b)
+    hue, lightness, saturation = colorsys.rgb_to_hls(r, g, b)
     # Increase lightness but keep it within bounds
-    l = min(1.0, l + amount)  
-    r_new, g_new, b_new = colorsys.hls_to_rgb(h, l, s)
+    lightness = min(1.0, lightness + amount)
+    r_new, g_new, b_new = colorsys.hls_to_rgb(hue, lightness, saturation)
     return rgb_to_hex(r_new, g_new, b_new)
-
-
-def generate_color_wave(base_color: str, steps: int = 30, amount: float = 0.3):
-    """Generate border colors with sinusoidal lightness oscillation"""
-    for i in itertools.cycle(range(steps)):
-        # Range 0~1
-        phase = (1 + math.sin(2 * math.pi * i / steps)) / 2
-        yield lighten_color(base_color, phase * amount)
 
 
 def calculate_contrast_color(bg_color: Gdk.RGBA):
@@ -271,4 +263,3 @@ def calculate_contrast_color(bg_color: Gdk.RGBA):
 
     result = "#000000" if luminance > 0.5 else "#FFFFFF"
     return result
-

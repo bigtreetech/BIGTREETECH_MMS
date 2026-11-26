@@ -1,26 +1,27 @@
 import logging
+from math import isfinite
+from shlex import quote
 
 import gi
+
 gi.require_version("Gtk", "3.0")
-from gi.repository import Gtk
+from gi.repository import GLib, Gtk
 
 from ks_includes.screen_panel import ScreenPanel
-
-from vivid.controllers.mms import get_klippy_api, get_rest_client
-from vivid.config.vivid_config import ColorConfig, VividConfig
 from vivid.components.box import FixedSquareBox
-from vivid.components.button import (
-    VerticalImageButton as VerButton,
-    HorizontalImageButton as HorButton
-)
+from vivid.components.button import HorizontalImageButton as HorButton
+from vivid.components.button import VerticalImageButton as VerButton
 from vivid.components.image import VividImage as VImage
 from vivid.components.label import VividLabel as VLabel
 from vivid.components.utils import (
     apply_button_css,
-    create_popup_window,
     create_section_container,
     get_screen_width,
 )
+from vivid.config.manager import VividConfigManager
+from vivid.config.vivid_config import ColorConfig, VividConfig
+from vivid.controllers.mms import MMSController
+from vivid.controllers.mms_slot import MMSSlotController
 
 
 class Panel(ScreenPanel):
@@ -30,16 +31,12 @@ class Panel(ScreenPanel):
         title=None,
         slot_num=0,
         color="#FFFFFF",
-        material="ABS",
-        parent_btn_hook=None,
-        cfg_manager=None
+        material="PLA"
     ):
         super().__init__(screen, title or _("ViViD SLOT"))
         self.slot_num = slot_num
         self.color = color
         self.material = material
-        self.parent_btn_hook = parent_btn_hook
-        self.cfg_manager = cfg_manager
 
         # Track widgets needing color updates
         self.color_dependent_widgets = []
@@ -47,6 +44,16 @@ class Panel(ScreenPanel):
         self.material_buttons = {}
         # Currently selected material button
         self.selected_material_button = None
+        self.config_manager = None
+        self.details_view = None
+
+        self.mms_controller = MMSController(self._screen)
+        self.mms_slot_controller = MMSSlotController(self._screen)
+
+        self.mms_controller.register_slot_color_callback(
+            self._on_slot_color_changed)
+        self.mms_controller.register_slot_material_callback(
+            self._on_slot_material_changed)
 
         self.build_ui()
 
@@ -62,104 +69,228 @@ class Panel(ScreenPanel):
         slot_control = self.create_slot_control(self.slot_num, self.color)
         self.color_dependent_widgets.append(slot_control)
         bottom_area.attach(slot_control, 0, 0, 1, 1)
-        bottom_area.attach(self.create_details_bar(), 0, 1, 1, 1)
 
-        # Main grid layout (Main View)
-        self.main_view = Gtk.Grid(
-            row_homogeneous=False,
-            column_homogeneous=False,
-            hexpand=True,
-            vexpand=True
+        # Main grid layout
+        main_grid = create_section_container("vvd-slotpanel-area")
+        main_grid.attach(top_area, 0, 0, 1, 1)
+        main_grid.attach(bottom_area, 0, 1, 1, 1)
+        details = Gtk.Button(label=_("Details"))
+        apply_button_css(details, "vvd-slot-ctrl-btn")
+        details.connect("clicked", lambda _: self.show_details())
+        main_grid.attach(details, 0, 2, 1, 1)
+        self.main_grid = main_grid
+        self.content.add(main_grid)
+
+    def get_slot_details(self):
+        if self.config_manager is None:
+            self.config_manager = VividConfigManager(self._config.config_path)
+        self.config_manager.manual_load()
+        details = self.config_manager.get_slot_details(self.slot_num)
+        slot = self.mms_slot_controller.get_status(self.slot_num)
+        info = slot.get("filament_info") or {}
+        reported = {
+            "vendor": info.get("filament_manufacturer") or slot.get("filament_vendor"),
+            "name": (
+                info.get("filament_type_detailed")
+                or info.get("color_name_a")
+                or slot.get("filament_name")
+            ),
+            "nozzle_temp": info.get("nozzle_temp"),
+            "bed_temp": info.get("bed_temperature"),
+        }
+        details.update({key: str(value) for key, value in reported.items() if value is not None})
+        return details
+
+    def show_details(self, details=None):
+        if details is None:
+            try:
+                details = self.get_slot_details()
+            except OSError:
+                logging.exception("Could not read local ViViD slot details")
+                self._screen.show_popup_message(_("Could not read slot details."))
+                return
+        grid = Gtk.Grid(row_spacing=8, column_spacing=16, margin=16, column_homogeneous=True)
+        fields = (
+            ("vendor", _("Vendor")), ("name", _("Name")),
+            ("nozzle_temp", _("Nozzle Temp")), ("bed_temp", _("Bed Temp")),
         )
-        self.main_view.attach(top_area, 0, 0, 1, 1)
-        self.main_view.attach(bottom_area, 0, 1, 1, 1)
-        
-        # Initial view
-        self.content.add(self.main_view)
-        self.content.show_all()
+        for row, (field, label) in enumerate(fields):
+            grid.attach(Gtk.Label(label=label, xalign=0), 0, row, 1, 1)
+            edit = Gtk.Button(label=details[field] or _("Edit"))
+            edit.connect("clicked", self.edit_detail, field, label, details)
+            grid.attach(edit, 1, row, 1, 1)
+        back = Gtk.Button(label=_("Back"))
+        back.connect("clicked", lambda _: self.close_details())
+        grid.attach(back, 0, len(fields), 2, 1)
+        self.set_details_view(grid)
 
-    def _switch_view(self, new_view):
-        # Remove current children from self.content
-        for child in self.content.get_children():
-            self.content.remove(child)
-        # Add the new view
-        self.content.add(new_view)
-        self.content.show_all()
+    def set_details_view(self, view):
+        if self.details_view is None:
+            self.content.remove(self.main_grid)
+        else:
+            self.details_view.destroy()
+        self.details_view = view
+        self.content.add(view)
+        view.show_all()
+
+    def close_details(self):
+        if self.details_view is not None:
+            self._screen.remove_keyboard()
+            self.details_view.destroy()
+            self.details_view = None
+            self.content.add(self.main_grid)
+            self.main_grid.show_all()
+
+    def edit_detail(self, widget, field, label, details):
+        view = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin=16)
+        view.pack_start(Gtk.Label(label=label), False, False, 0)
+        entry = Gtk.Entry(text=details[field])
+        if field in ("nozzle_temp", "bed_temp"):
+            entry.set_input_purpose(Gtk.InputPurpose.NUMBER)
+        entry.connect("button-press-event", self._screen.show_keyboard)
+        entry.connect("touch-event", self._screen.show_keyboard)
+        view.pack_start(entry, False, False, 0)
+        buttons = Gtk.Box(spacing=12, homogeneous=True)
+        save = Gtk.Button(label=_("Save"))
+        cancel = Gtk.Button(label=_("Cancel"))
+        buttons.add(save)
+        buttons.add(cancel)
+        view.pack_start(buttons, False, False, 0)
+
+        def back(_widget):
+            self._screen.remove_keyboard()
+            self.show_details(details)
+
+        def submit(_widget):
+            if not save.get_sensitive():
+                return
+            value = entry.get_text().strip()
+            if value and field in ("nozzle_temp", "bed_temp"):
+                try:
+                    temperature = float(value)
+                    if not isfinite(temperature) or temperature < 0:
+                        raise ValueError
+                except ValueError:
+                    self._screen.show_popup_message(_("Enter a valid temperature."))
+                    return
+                value = str(temperature)
+            if ";" in value or (value and not value.isprintable()):
+                self._screen.show_popup_message(
+                    _("Enter a single line of text without semicolons.")
+                )
+                return
+            save.set_sensitive(False)
+            timeout_id = None
+
+            def saved(response, *_args):
+                nonlocal timeout_id
+                if timeout_id is None:
+                    return
+                GLib.source_remove(timeout_id)
+                timeout_id = None
+                if "error" in response:
+                    if self.details_view is view:
+                        save.set_sensitive(True)
+                        self._screen.show_popup_message(_("Could not save slot details."))
+                    return
+                try:
+                    self.config_manager.save_slot_detail(self.slot_num, field, value)
+                except OSError:
+                    logging.exception("Could not save local ViViD slot details")
+                details[field] = value
+                if self.details_view is view:
+                    back(save)
+
+            script = f"MMS_SLOT_MAP SLOT={self.slot_num} {field.upper()}={quote(value)}"
+            timeout_id = GLib.timeout_add_seconds(10, saved, {"error": True})
+            if not self.mms_controller.send_script(script, saved):
+                saved({"error": True})
+
+        save.connect("clicked", submit)
+        entry.connect("activate", submit)
+        cancel.connect("clicked", back)
+        self.set_details_view(view)
+        entry.grab_focus()
+        self._screen.show_keyboard(entry=entry)
 
     # ---- Material Components ----
     def create_material_scroll(self):
         """Create scrollable material selection area"""
-        material_scroll = Gtk.Grid(
-            row_homogeneous=True,
-            column_homogeneous=True,
-            hexpand=False,
-            vexpand=False
-        )
-        material_scroll.get_style_context().add_class("vvd-material-scroll")
+        screen_width = get_screen_width(self)
+        scroll_height = screen_width / 4.5
+        slider_radius = screen_width / 256
+        slider_width = screen_width / 256
+        slider_height = screen_width / 11
 
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroll.get_style_context().add_class("vvd-material-scroll")
+        scroll.set_size_request(-1, scroll_height)
+
+        css_provider = Gtk.CssProvider()
+        css = (
+            f".vvd-material-scroll scrollbar slider {{"
+            f"  background-color: #FFFFFF;"
+            f"  border-radius: {slider_radius}px;"
+            f"  min-width: {slider_width}px;"
+            f"  min-height: {slider_height}px;"
+            f"}}"
+        )
+        css_provider.load_from_data(css.encode())
+        Gtk.StyleContext.add_provider_for_screen(
+            scroll.get_screen(), css_provider,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+        m_grid = create_section_container("vvd-material-scroll")
         for i, material_obj in enumerate(VividConfig.MATERIALS):
             material = material_obj.name
-            button = self.create_material_button(self.color, material)
+            dp_color = material_obj.display_color
+            button = self.create_material_button(dp_color, material)
             self.material_buttons[material] = button
-            material_scroll.attach(button, 0, i, 1, 1)
-
-            # Select the button if it matches the current material
+            m_grid.attach(button, 0, i, 1, 1)
             if material == self.material:
                 self.select_material_button(button)
 
-        self.color_dependent_widgets.append(material_scroll)
-        return material_scroll
+        scroll.add(m_grid)
+        self.color_dependent_widgets.append(scroll)
+        return scroll
 
     def create_material_button(self, color, material):
         """Create a material selection button"""
         screen_width = get_screen_width(self)
-        font_size = screen_width / 45
+        font_size = screen_width / 60
 
         btn = HorButton(label=VLabel(content=material, size=font_size))
-        btn.set_halign(Gtk.Align.START)
-        btn.connect(
-            "clicked",
-            lambda _, m=material: self.refresh_slot_material(m)
-        )
+        btn.box.set_halign(Gtk.Align.START)
+        btn.connect("clicked",
+                     lambda _, m=material: self.refresh_slot_material(m))
 
-        # Define pattern for refresh
         base_class = "vvd-material-scroll-btn"
-        btn.refresh_pattern = f"""
-            .{base_class} {{
-                border-left-color: %s;
-            }}
-            .{base_class}:active {{
-                background-color: %s;
-            }}
-        """
+        btn.selected_pattern = f".{base_class} {{ background-color: %s; }}"
 
-        # Apply dynamic CSS
-        apply_button_css(btn, base_class, "")
-        apply_button_css(btn, f"{base_class}:active", "")
+        provider = Gtk.CssProvider()
+        provider.load_from_data(
+            f".{base_class} {{ border-left-color: {color}; }}".encode())
+        ctx = btn.get_style_context()
+        ctx.add_provider(provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        ctx.add_class(base_class)
         return btn
 
     def select_material_button(self, button):
         """Select a material button and deselect the previous one"""
-        # Deselect previously selected button
         if self.selected_material_button:
-            # Use transparent color to effectively remove the border
-            self.apply_button_border(
-                self.selected_material_button, 
-                "transparent"
-            )
-            # Recover original_color to None to skip refresh
+            self.apply_unselect(self.selected_material_button)
             self.selected_material_button.original_color = None
 
-        # Update the selected button
         button.original_color = self.color
         self.selected_material_button = button
-        # Apply selected style
-        self.apply_button_border(button, self.color)
+        self.apply_select(button)
 
-    def apply_button_border(self, button, color):
-        """Apply the border style to a selected material button"""
-        data = button.refresh_pattern % (color, color)
-        add_widget_context(button, data)
+    def apply_unselect(self, widget):
+        _apply_dynamic_css(widget, None, "#1A2E39", widget.selected_pattern)
+
+    def apply_select(self, widget):
+        _apply_dynamic_css(widget, None, "#142027", widget.selected_pattern)
 
     def refresh_slot_material(self, material):
         """Update the selected material and UI state"""
@@ -170,44 +301,57 @@ class Panel(ScreenPanel):
         if material in self.material_buttons:
             self.select_material_button(self.material_buttons[material])
 
-        # Notify parent if hook exists
-        if self.parent_btn_hook:
-            self.parent_btn_hook(self.slot_num, label=material)
-
-        # Update config manager cache
-        self.cfg_manager.update_slot_material(self.slot_num, material)
-
-        # Sync to Klipper
-        script = f"MMS_SLOT_MAP SLOT={self.slot_num} MATERIAL='{material}'"
-        get_klippy_api(self._screen).gcode_script(script)
+        # Notify MMS
+        self.mms_controller.update_filament_material(
+            self.slot_num, material)
 
     # ---- Color Palette Components ----
     def create_color_palette(self):
         """Create a color selection grid"""
-        palette = Gtk.Grid(
-            row_homogeneous=True, 
-            column_homogeneous=True, 
+        screen_width = get_screen_width(self)
+        spacing_box_p = screen_width / 50
+        spacing_box_line = screen_width / 70
+
+        palette = create_section_container("vvd-color-palette")
+
+        box_p = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL,
+            halign=Gtk.Align.CENTER,
+            valign=Gtk.Align.CENTER,
             hexpand=True,
-            vexpand=True
+            vexpand=True,
+            spacing=spacing_box_p
         )
-        palette.get_style_context().add_class("vvd-color-palette")
 
         # Two-row color arrangement
         palette_map = (
             ("red", "orange", "yellow", "lime", "green", "cyan"),
             ("blue", "purple", "pink", "white", "black", "gray")
         )
-        for row, colors in enumerate(palette_map):
-            for col, color_name in enumerate(colors):
+        for colors_tup in palette_map:
+            box_line = Gtk.Box(
+                orientation=Gtk.Orientation.HORIZONTAL,
+                halign=Gtk.Align.CENTER,
+                valign=Gtk.Align.CENTER,
+                hexpand=True,
+                vexpand=True,
+                spacing=spacing_box_line
+            )
+            for color_name in colors_tup:
                 btn = self.create_color_button(color_name)
-                palette.attach(btn, col, row, 1, 1)
+                box_line.add(btn)
 
+            box_p.add(box_line)
+
+        palette.set_halign(Gtk.Align.FILL)
+        palette.set_valign(Gtk.Align.FILL)
+        palette.attach(box_p, 0, 0, 1, 1)
         return palette
 
     def create_color_button(self, color_name):
         """Add individual color button to palette"""
         screen_width = get_screen_width(self)
-        square_size = screen_width / 12
+        square_size = screen_width / 14
         box = FixedSquareBox(size=square_size)
 
         base_class = "vvd-color-btn"
@@ -229,393 +373,114 @@ class Panel(ScreenPanel):
         """Update slot color throughout UI and hardware"""
         new_color = ColorConfig.get_color_hex(color_name)
         self.color = new_color
-
-        # Update all UI components
         for widget in self.color_dependent_widgets:
             update_widget_color(widget, new_color)
-
-        # Notify parent if hook exists
-        if self.parent_btn_hook:
-            self.parent_btn_hook(self.slot_num, color=new_color)
-
-        # Update config manager cache
-        self.cfg_manager.update_slot_color(self.slot_num, new_color)
-
-        # Sync to Klipper
-        color_hex = new_color[1:] if new_color.startswith("#") else new_color
-        color_hex = color_hex.lower()
-        script = f"MMS_SLOT_MAP SLOT={self.slot_num} COLOR='{color_hex}'"
-        get_klippy_api(self._screen).gcode_script(script)
-
-        # Update hardware LED color
-        self.mms_update_slot_led(new_color)
-
-    def mms_update_slot_led(self, color):
-        """Update hardware LED color (strip '#' prefix)"""
-        # self.color = "#FFFFFF" --> COLOR=FFFFFF
-        color_hex = color[1:] if color.startswith("#") else color
-        color_hex = color_hex.lower()
-        script = f"MMS_LED_SET_COLOR SLOT={self.slot_num} COLOR={color_hex}"
-        get_klippy_api(self._screen).gcode_script(script)
+        self.mms_controller.update_filament_color(self.slot_num, new_color)
 
     # ---- SLOT Control Functions ----
     def create_slot_control(self, slot_num, color):
-        # Create action buttons with consistent styling
         self.buttons = {
+            "preload": self.create_slot_action_button(
+                "vivid_preload", "Pre-Load", color,
+                f"MMS_PRELOAD SLOT_NUM={slot_num}"),
+            "eject": self.create_slot_action_button(
+                "vivid_eject", "Eject", color, "MMS_EJECT_SLOT"),
             "select": self.create_slot_action_button(
-                "vivid_select", "Select", color, f"MMS_SELECT_U SLOT={slot_num}"
-            ),
+                "vivid_select", "Select", color,
+                f"MMS_SELECT_U SLOT={slot_num}"),
             "load": self.create_slot_action_button(
-                "vivid_load", "Extruder", color, f"MMS_LOAD_U SLOT={slot_num}"
-            ),
-            "prepare": self.create_slot_action_button(
-                "vivid_prepare", "Buffer", color, f"MMS_PREPARE_U SLOT={slot_num}"
-            ),
-            "pop": self.create_slot_action_button(
-                "vivid_pop", "Inlet", color, f"MMS_POP_U SLOT={slot_num}"
-            ),
-            "pre_load": self.create_slot_action_button(
-                "vivid_pre_load", "Pre-Load", color, f"MMS_PRE_LOAD SLOT={slot_num}"
-            )
+                "vivid_load", "Load", color,
+                f"MMS_LOAD_SLOT SLOT_NUM={slot_num}"),
         }
-
-        # Build button grid with proper alignment
-        # Notice always be grid for refresh color
         grid = Gtk.Grid(row_homogeneous=True, column_homogeneous=True)
-
-        for i, button_name in enumerate(["select", "load", "prepare", "pop", "pre_load"]):
-            # x=0, y=0, width=2, height=1
-            grid.attach(self.buttons[button_name], i, 0, 1, 1)
-
+        for i, name in enumerate(["preload", "eject", "select", "load"]):
+            grid.attach(self.buttons[name], i, 0, 1, 1)
         return grid
 
     def create_slot_action_button(self, icon, label, color, script):
-        # Calculate dimensions based on screen size
         screen_width = get_screen_width(self)
-        # width = height = screen_width / 15
-        # font_size = screen_width / 50
-        width = height = screen_width / 20
-        font_size = screen_width / 60
-
-        # Create button
         button = VerButton(
-            image=VImage(file_name=f"{icon}.svg", width=width, height=height),
-            label=VLabel(content=label, size=font_size, bold=True)
-        )
-        # Apply styling
+            image=VImage(file_name=f"{icon}.svg",
+                         width=screen_width / 15, height=screen_width / 15),
+            label=VLabel(content=label, size=screen_width / 65, bold=True))
         base_class = "vvd-slot-ctrl-btn"
-        apply_button_css(button, base_class, f"border-bottom-color: {color};")
-        apply_button_css(button, f"{base_class}:active," f"background-color: {color};")
-
-        # Mark for refresh color
         button.original_color = color
-        # button.refresh_pattern = f".{base_class} {{border-bottom-color: {new_color};}}"
-        button.refresh_pattern = f"""
-        .{base_class} {{
-            border-bottom-color: %s;
-        }}
-        .{base_class}:active {{
-            background-color: %s;
-        }}
-        """
-
-        # Connect event handler
+        button.refresh_pattern = (
+            f".{base_class} {{ border-bottom-color: %s; }}"
+            f".{base_class}:active {{ background-color: %s; }}")
+        _apply_dynamic_css(button, base_class, color, button.refresh_pattern)
         button.connect("clicked", lambda w: self.mms_slot_action(script))
-
         return button
-
-    def create_details_bar(self):
-        bar = Gtk.Grid(row_homogeneous=True, column_homogeneous=True)
-        bar.attach(self.create_details_button(), 0, 0, 1, 1)
-        return bar
-
-    def create_details_button(self):
-        screen_width = get_screen_width(self)
-        font_size = screen_width / 60
-        button = HorButton(
-            label=VLabel(content="Details", size=font_size, bold=True)
-        )
-        base_class = "vvd-slot-details-btn"
-        apply_button_css(button, base_class, f"border-bottom-color: {self.color};")
-        apply_button_css(
-            button, f"{base_class}:active", f"background-color: {self.color};"
-        )
-        button.original_color = self.color
-        button.refresh_pattern = f"""
-        .{base_class} {{
-            border-bottom-color: %s;
-        }}
-        .{base_class}:active {{
-            background-color: %s;
-        }}
-        """
-        self.color_dependent_widgets.append(button)
-        button.connect("clicked", lambda w: self.show_details_window())
-        return button
-
-    def _format_gcode_str(self, value):
-        escaped = value.replace('"', '\\"')
-        return f"\"{escaped}\""
-
-    def _parse_optional_float(self, value, field_name):
-        value = value.strip()
-        if not value:
-            return None
-        try:
-            return float(value)
-        except ValueError:
-            logging.error(f"Invalid {field_name} value: {value}")
-            return "__invalid__"
-
-    def _coalesce_detail_value(self, value, fallback):
-        if value is None:
-            return fallback
-        if isinstance(value, str):
-            value = value.strip()
-            return value if value else fallback
-        return str(value)
-
-    def _get_lane_data(self):
-        client = get_rest_client(self._screen)
-        if not client:
-            return None
-        lane_result = client.send_request("server/database/item?namespace=lane_data")
-        if not lane_result or not isinstance(lane_result, dict):
-            return None
-        lane_data = lane_result.get("value", lane_result)
-        if not isinstance(lane_data, dict):
-            return None
-        slot_data = lane_data.get(f"lane{self.slot_num}")
-        return slot_data if isinstance(slot_data, dict) else None
-
-    def _get_mms_metadata(self):
-        client = get_rest_client(self._screen)
-        if not client:
-            return None
-        # Query Klipper directly for mms object status
-        method = "printer/objects/query?mms"
-        result = client.send_request(method)
-        if result is False:
-            return None
-        
-        mms_data = result.get("status", {}).get("mms", {})
-        slots_data = mms_data.get("slots", {})
-        slot_data = slots_data.get(str(self.slot_num))
-        if not slot_data:
-            return None
-        
-        # Extract filament info
-        info = slot_data.get("filament_info", {})
-        vendor = info.get("filament_manufacturer")
-        name = info.get("filament_type_detailed") or info.get("color_name_a")
-        nozzle_temp = info.get("nozzle_temp")
-        bed_temp = info.get("bed_temperature")
-        
-        # Fallback to direct fields if info is sparse
-        if not vendor:
-            vendor = slot_data.get("filament_vendor")
-        if not name:
-            name = slot_data.get("filament_name")
-        
-        return {
-            "vendor": vendor,
-            "name": name,
-            "nozzle_temp": nozzle_temp,
-            "bed_temp": bed_temp
-        }
-
-    def show_details_window(self):
-        vendor, name, nozzle_temp, bed_temp = self.cfg_manager.get_slot_details(
-            self.slot_num
-        )
-        
-        # Try metadata from Klipper first
-        meta = self._get_mms_metadata()
-        if meta:
-            vendor = self._coalesce_detail_value(meta.get("vendor"), vendor)
-            name = self._coalesce_detail_value(meta.get("name"), name)
-            nozzle_temp = self._coalesce_detail_value(meta.get("nozzle_temp"), nozzle_temp)
-            bed_temp = self._coalesce_detail_value(meta.get("bed_temp"), bed_temp)
-
-        screen_width = get_screen_width(self)
-        font_size = screen_width / 45
-
-        # --- Details Overview View ---
-        details_view = Gtk.Grid(hexpand=True, vexpand=True)
-        details_view.get_style_context().add_class("vvd-details-view")
-
-        content_box = Gtk.Box(
-            orientation=Gtk.Orientation.VERTICAL,
-            spacing=10,
-            halign=Gtk.Align.CENTER,
-            valign=Gtk.Align.CENTER,
-        )
-        content_box.get_style_context().add_class("vvd-modal-box")
-        content_box.set_size_request(screen_width * 0.8, -1)
-        
-        grid = Gtk.Grid(row_spacing=15, column_spacing=20, margin=20)
-        content_box.pack_start(grid, True, True, 20)
-
-        def add_detail_row(row, label_text, value, field_key):
-            lbl = VLabel(content=f"<b>{label_text}:</b>", size=font_size)
-            val_lbl = VLabel(content=value if value else "-", size=font_size)
-            val_lbl.set_hexpand(True)
-            
-            edit_btn = Gtk.Button(relief=Gtk.ReliefStyle.NONE)
-            img_size = int(font_size * 1.2)
-            edit_img = VImage("vivid_edit.svg", width=img_size, height=img_size)
-            edit_btn.set_image(edit_img)
-            
-            grid.attach(lbl, 0, row, 1, 1)
-            grid.attach(val_lbl, 1, row, 1, 1)
-            grid.attach(edit_btn, 2, row, 1, 1)
-            
-            edit_btn.connect("clicked", lambda w: self.show_edit_view(
-                label_text, value, field_key))
-
-        add_detail_row(0, "Vendor", vendor, "vendor")
-        add_detail_row(1, "Name", name, "name")
-        add_detail_row(2, "Nozzle Temp", nozzle_temp, "nozzle_temp")
-        add_detail_row(3, "Bed Temp", bed_temp, "bed_temp")
-
-        # Bottom Actions
-        action_bar = Gtk.Box(spacing=20, halign=Gtk.Align.CENTER, margin_bottom=15)
-        back_btn = HorButton(label=VLabel(content="Back", size=font_size, bold=True))
-        back_btn.connect("clicked", lambda w: self._switch_view(self.main_view))
-        action_bar.pack_start(back_btn, False, False, 0)
-        content_box.add(action_bar)
-
-        details_view.attach(content_box, 0, 0, 1, 1)
-        self._switch_view(details_view)
-
-    def show_edit_view(self, label_text, current_value, field_key):
-        screen_width = get_screen_width(self)
-        font_size = screen_width / 40
-
-        edit_view = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=20, margin=20)
-        
-        # Header with Title
-        header = VLabel(content=f"Edit {label_text}", size=font_size, bold=True)
-        edit_view.pack_start(header, False, False, 0)
-
-        # Large Input Field at Top
-        entry = Gtk.Entry()
-        entry.set_text(str(current_value) if current_value is not None else "")
-        entry.get_style_context().add_class("vvd-edit-entry")
-        entry.set_hexpand(True)
-        
-        if "temp" in field_key.lower():
-            entry.set_input_purpose(Gtk.InputPurpose.NUMBER)
-        
-        edit_view.pack_start(entry, False, False, 0)
-
-        # Action Buttons
-        btn_box = Gtk.Box(spacing=20, halign=Gtk.Align.CENTER)
-        cancel_btn = HorButton(label=VLabel(content="Cancel", size=font_size*0.8))
-        confirm_btn = HorButton(label=VLabel(content="Confirm", size=font_size*0.8))
-        
-        # Add borders/styling
-        cancel_btn.get_style_context().add_class("vvd-slot-ctrl-btn")
-        confirm_btn.get_style_context().add_class("vvd-slot-ctrl-btn")
-        
-        btn_box.pack_start(cancel_btn, False, False, 0)
-        btn_box.pack_start(confirm_btn, False, False, 0)
-        edit_view.pack_start(btn_box, False, False, 0)
-
-        self._switch_view(edit_view)
-        
-        # Auto-focus and show keyboard
-        from gi.repository import GLib
-        GLib.timeout_add(100, lambda: (
-            entry.grab_focus(),
-            self._screen.show_keyboard(entry=entry, box=self.content),
-            False
-        ))
-
-        def on_confirm():
-            new_val = entry.get_text().strip()
-            self._save_single_detail(field_key, new_val)
-            self._screen.remove_keyboard(box=self.content)
-            # Refresh details overview
-            self.show_details_window()
-
-        def on_cancel():
-            self._screen.remove_keyboard(box=self.content)
-            self.show_details_window()
-
-        confirm_btn.connect("clicked", lambda w: on_confirm())
-        cancel_btn.connect("clicked", lambda w: on_cancel())
-        # Also handle Enter key
-        entry.connect("activate", lambda w: on_confirm())
-
-    def _save_single_detail(self, field_key, value):
-        vendor, name, nozzle_temp, bed_temp = self.cfg_manager.get_slot_details(
-            self.slot_num
-        )
-        
-        if field_key == "vendor": vendor = value
-        elif field_key == "name": name = value
-        elif field_key == "nozzle_temp": nozzle_temp = value
-        elif field_key == "bed_temp": bed_temp = value
-
-        # Validate temps
-        if "temp" in field_key:
-            f_val = self._parse_optional_float(value, field_key)
-            if f_val == "__invalid__":
-                return
-            value = "" if f_val is None else str(f_val)
-            if field_key == "nozzle_temp": nozzle_temp = value
-            else: bed_temp = value
-
-        self.cfg_manager.update_slot_details(
-            self.slot_num, vendor, name, nozzle_temp, bed_temp
-        )
-
-        empty_str = "\"\""
-        script = (
-            f"MMS_SLOT_MAP SLOT={self.slot_num}"
-            f" VENDOR={self._format_gcode_str(vendor)}"
-            f" NAME={self._format_gcode_str(name)}"
-            f" NOZZLE_TEMP={nozzle_temp if nozzle_temp else empty_str}"
-            f" BED_TEMP={bed_temp if bed_temp else empty_str}"
-        )
-        get_klippy_api(self._screen).gcode_script(script)
 
     def mms_slot_action(self, script):
         """Execute GCode command for slot action"""
-        get_klippy_api(self._screen).gcode_script(script)
+        self.mms_controller.send_script(script)
 
     # ---- Panel life ----
     def activate(self):
-        # logging.info("==== ViViD slot panel activate! ====")
-        return
+        # Update filament color
+        f_color = self.mms_slot_controller.get_filament_color(self.slot_num)
+        if f_color != self.color:
+            self.color = f_color or "#FFFFFF"
+            for widget in self.color_dependent_widgets:
+                update_widget_color(widget, self.color)
+
+        # Update filament material
+        f_material = self.mms_slot_controller.get_filament_material(self.slot_num)
+        if f_material != self.material:
+            self.material = f_material or "N/A"
+            if f_material and f_material in self.material_buttons:
+                self.select_material_button(self.material_buttons[f_material])
+            elif self.selected_material_button:
+                self.apply_unselect(self.selected_material_button)
+                self.selected_material_button = None
 
     def deactivate(self):
-        # logging.info("==== ViViD slot panel deactivate! ====")
-        self._screen.remove_keyboard(box=self.content)
-        # Save new config
-        self.cfg_manager.manual_save()
+        self.close_details()
+
+    def process_update(self, action, data):
+        if action == "notify_status_update":
+            self.mms_controller.handle_notify_status_update(data)
+
+    def _on_slot_color_changed(self, slot_num, color):
+        if slot_num != self.slot_num:
+            return
+        new_color = color or "#FFFFFF"
+        if new_color != self.color:
+            self.color = new_color
+            for widget in self.color_dependent_widgets:
+                update_widget_color(widget, self.color)
+
+    def _on_slot_material_changed(self, slot_num, material):
+        if slot_num != self.slot_num:
+            return
+        new_material = material or "N/A"
+        if new_material != self.material:
+            self.material = new_material
+            if material and material in self.material_buttons:
+                self.select_material_button(self.material_buttons[material])
+            elif self.selected_material_button:
+                self.apply_unselect(self.selected_material_button)
+                self.selected_material_button = None
 
 
-def add_widget_context(widget, data):
+def _apply_dynamic_css(widget, base_class, color, pattern):
+    """Apply a pattern-based CSS snippet (with %s for color) to a widget."""
+    count = pattern.count("%s")
+    args = (color,) * count
     provider = Gtk.CssProvider()
-    provider.load_from_data(data.encode())
-    context = widget.get_style_context()
-    context.add_provider(
-        provider, 
-        Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
-    )
+    provider.load_from_data((pattern % args).encode())
+    ctx = widget.get_style_context()
+    ctx.add_provider(provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+    if base_class is not None:
+        ctx.add_class(base_class)
 
 
 def update_widget_color(widget, color, attr_key="original_color"):
-    """Recursively update widget color scheme"""
+    """Recursively apply new colour to widgets that have a refresh_pattern."""
     if isinstance(widget, Gtk.Grid):
         for child in widget.get_children():
             update_widget_color(child, color)
-
-    elif hasattr(widget, attr_key) and \
-        getattr(widget, attr_key, None):
-        # Apply new border color to slot control button
-        data = widget.refresh_pattern % (color, color)
-        add_widget_context(widget, data)
+    elif hasattr(widget, attr_key) and getattr(widget, attr_key):
+        _apply_dynamic_css(widget, None, color, widget.refresh_pattern)
         setattr(widget, attr_key, color)

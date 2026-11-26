@@ -1,5 +1,194 @@
 # MMS Change Log
 
+## Ver 0.1.0496
+
+- Allow standalone homing while a tool change is pending. RESUME rejects a saved return position after rehoming or motor release. Use CLEAR_PAUSE to discard a manual request or CANCEL_PRINT to end a print. Manual Tx commands that need motion prompt for G28 if XYZ is unhomed.
+- Keep cutter-return protection after clearing a pause or cancelling a print. While the return is pending, the matching printer macros prevent parking, homing, Z tilt, and wiping. Cancelling still turns off the heaters and skips automatic unload. If XYZ coordinates are still trusted, MMS_SIMPLE_CUT can finish the return by itself.
+- Added `MMS_PAUSE_COOL` to record the nozzle target temperature when a pause times out and turns off the heater. RESUME restores that target once when reheating is enabled and the current target is zero. A nonzero temperature target set by the user takes precedence.
+- The matching printer configuration keeps the bed heated and the motors enabled after a pause timeout. Discarding a timed-out manual pause turns off all heaters and releases the motors once the cutter return is complete.
+- The printer’s `TEST_VIVID` checks the target slot’s Inlet and remnant status before each Tx and verifies the physical slot afterward. If the tool change used a backup slot, the loop stops immediately.
+
+## Ver 0.1.0495
+
+- Release the feeder through Klipper’s background step queue when Inlet runs out during a print, so the extruder can keep pulling the remaining filament without blocking print commands.
+- If Entry runs out or a tool change requests a different physical slot during release, park over the waste tray before waiting for release to finish. Preserve release failures for RESUME.
+
+## Ver 0.1.0494
+
+- During ejection, optionally retract the selected source slot and the extruder together briefly while the cutter is held down, then return the toolhead along the cutter path. Added `cut_hold_retract_distance` and `cut_hold_retract_speed`, with the distance defaulting to 0 mm.
+- Preserve the completed pull if the cutter return fails so recovery can resume the return. Standalone cut commands still perform only the cutting motion.
+
+## Ver 0.1.0493
+
+- Use the same filament metadata format for edits, RFID reads, and Moonraker `lane_data` synchronization, with compatibility for existing records. Retain the RFID-set slot LED color until the slot is empty.
+- Clear filament metadata when the slot becomes empty and retain its delivery calibration. Printing can continue while Moonraker is disconnected, and local edits remain pending in the current Klipper session for synchronization after reconnection.
+- Added `MMS_CHANGE_TOOL TOOL=<slot_number>` for the G-code preprocessor. Tx continues to handle the tool change and return move.
+
+## Ver 0.1.0492
+
+- When Inlet runs out on an accepted print path, stop topping up the buffer, finish queued feeder motion, and release the selector so the extruder can pull the remaining filament.
+- On ordinary RESUME, combine repayment of the pause retraction with `resume_extra_extrude_distance` into one continuous extrusion after the XY return and before lowering to print height.
+
+## Ver 0.1.0491
+
+- At Klipper startup, read the slot selector switches, release any clamped feeder, and verify the switch states. After a restart with filament loaded, manual extrusion or retraction can proceed once the hotend is heated.
+
+## Ver 0.1.0490
+
+- Added the optional `exit_sensor` in `[mms]`, alongside `entry_sensor`, for filament sensing before and after the extruder drive. `MMS_STATUS` reports the exit state, and charge acceptance checks it.
+- If the exit signal alone is missing at charge acceptance, RESUME can advance filament from the original slot while its feed path is usable. The move stops when Exit triggers and is bounded by `fill_extrude_distance`.
+
+## Ver 0.1.0489
+
+- If Entry briefly releases during charge filling while the original slot can still feed, use a bounded feed move to reacquire Entry, then complete the remaining extrusion. Pause for repair if retries are exhausted or the path becomes invalid.
+
+## Ver 0.1.0488
+
+- During charge filling, follow E motion using buffer feedback. Refill at low and stop adding forward feed at full. Removed the grip probe based on Outlet release and its automatic retract-and-retry sequence. The post-charge verification hook remains available.
+
+## Ver 0.1.0487
+
+- After manual repair, RESUME checks the original slot’s current Inlet, Gate, and Entry to determine where loading can continue. It retains fill progress that is still valid. Recheck traction if the downstream path was disturbed.
+- Use the current Gate and Entry states when handling an exhausted tail. Skip withdrawal when the path is already clear and flag a withdrawn remnant when it needs to be removed.
+- If a buffer switch rebounds after positioning, use the remaining local attempts to recover the reference. If Outlet triggers again during a grip check, use only the remaining verification travel.
+
+## Ver 0.1.0486
+
+- Unify feed-path handoff across loading, ejection, and recovery. Keep completed fill and cut progress, flag local remnants that require removal, and use the same withdrawal workflow for POP.
+- Recheck both buffer switches after positioning. After maintenance or explicit drive synchronization, restore the original feed only if its path is still valid. Scope the multi-MCU homing timeout to MMS endstops.
+- Save delivery calibration per slot and preserve the previous value on measurement failure. Improve cancellation, path-clearance, RFID reader, and macro parameter checks for slot diagnostics.
+- Clean up dryer timers when heating stops and allow extension setup to be retried after a configuration write failure.
+
+## Ver 0.1.0485
+
+- For a pause with a healthy feed path, retract briefly before lifting Z and parking. Continue parking if retraction fails.
+- Added rate-limited diagnostics for sustained low buffer reserve, including switch states and feeder step data.
+
+## Ver 0.1.0484
+
+- If Inlet runs out during feeding before Entry triggers, attempt bounded withdrawal of a controllable tail. With endless spool disabled, pause for manual refill after withdrawal.
+- Added `buffer_max_velocity` and `buffer_max_accel` for buffer feeding, defaulting to 80 mm/s and 120 mm/s². These limits apply to the MMS motor only.
+- Reacquire Entry with a bounded feed after retraction and log the actual retry count. Lift Z promptly on pause and add `resume_extra_extrude_distance` for extra extrusion after the return on ordinary RESUME.
+
+## Ver 0.1.0483
+
+- Use the extruder’s motion acceleration for buffer following. Use `speed_drive` and `accel_drive` for explicit loading and unloading.
+- Calibrate the low-switch release edge directly. Check extruder grip after loading by observing Outlet release, with bounded retries after synchronized withdrawal.
+
+## Ver 0.1.0482
+
+- Keep responding to refill demand while the low switch remains active and stop adding forward feed while the full switch remains active. Use live switch states to correct reserve estimates after slippage.
+- Update the measured buffer stroke within the valid range, discard invalid low-release references, and log buffer feedback.
+
+## Ver 0.1.0481
+
+- Use the buffer controller for purging, pause retraction, and resume repayment on an established path. Reuse valid calibration when preparing the buffer and configure its working reserve with `buffer_target_percentage`, defaulting to 50%.
+- Prepare feed reserve before the final nozzle cleaning and retain bounded reference searches. Added `MMS_UNSELECT_SLOT` to the macro panel to stop feeding and release the selector during paused repairs.
+
+## Ver 0.1.0480
+
+- Fixed feeder restarts after idle so they skip elapsed motion windows and drain queued steps before going to sleep.
+- Share native motion boundaries and Drip cleanup across feeder and extruder operations. Treat unrecoverable step-compression errors on older Klipper cores as shutdown faults to prevent recovery on an invalid queue.
+
+## Ver 0.1.0479
+
+- Recheck endstop states after homing steps finish before accepting the result and handing off the motor. Buffer measurement, filling, clearing, and print preparation share bounded reference searches with local retries at calibration speed.
+- Apply the same loaded-tail rules to every slot in a backup chain. A released tail can remain in use, and failures restarting buffer monitoring preserve completed tool-change stages.
+
+## Ver 0.1.0478
+
+- If repeated Tx commands resolve to the same loaded physical slot after Inlet runs out, keep using the accepted tail until Entry releases and skip redundant loading and purging.
+
+## Ver 0.1.0477
+
+- Run buffer feeding and extruder stepping on Klipper’s native motion clock. Reuse queued E trajectories to estimate consumption and retain braking room. Use `speed_drive` as the default for explicit delivery.
+- Supply manual extrusion while ordinarily paused or idle. At sustained low reserve, refill according to E demand and limit refill attempts while E is stationary. Removed the interim `buffer_feed_margin` and `buffer_refill_timeout` options.
+- Preserve the original cause of feeder startup failures and drain committed steps before handing off to maintenance.
+
+## Ver 0.1.0476
+
+- Share upstream feeding, synchronized filling, and charge acceptance between tool changes and recovery. RESUME retains completed stages and the original fault.
+- Hand off motors after manual and Drip steps finish executing. Refresh Entry with timestamped endstop feedback so delayed reports cannot overwrite newer states.
+- Use one ejection workflow for controllable occupied paths. Coordinate buffer reserve and feeder handoff, and route background buffer motion failures through pause and parking.
+
+## Ver 0.1.0475
+
+- When Tx resolves to the same healthy loaded physical slot, including logical tools mapped to that slot, skip cutting, unloading, loading, and purging.
+- Share staged charge and recovery between tool changes and reloads. Block RESUME while background delivery is pending and allow selector release or reselection during a paused tool-change repair.
+- Support parameterized startup purging with `MMS_PURGE`, handle synchronized feeder handoff, and retain pre-cleaning when the extrusion distance is zero.
+
+## Ver 0.1.0474
+
+- Show only progress in slot-test round headers. Report RFID status per slot, distinguishing a slot with RFID disabled from one skipped by the round limit.
+
+## Ver 0.1.0473
+
+- Unify tool changes, runout handling, pause, and recovery. RESUME retries the relevant stage when feeding stops before Entry or charge acceptance fails. Partial-feed ejection and fault parking use the waste-tray path when available.
+- Keep the loaded tail in use after Inlet runs out until the next tool change or Entry release. With endless spool enabled, clear the tail and try the backup chain. With it disabled, pause and release the selector for manual repair.
+- Add optional digital or ADC cutter feedback to `MMS_STATUS`. Fix propagation of homing and motion dispatch failures, stepper handoff, and extrusion distance rounding at motion limits.
+- Use continuous E trajectories for purging and clearing remnants, with the part fan off during extrusion. Support mechanical pre-cleaning, a nozzle wiping macro, and optional retraction and purging for ordinary pause and resume.
+- Run unloading and loading for `MMS_LOAD_SLOT` as one cancellable task and keep its macro-panel button. Coordinate unloading, motion cleanup, and heater shutdown at print completion.
+- Added `slots_rfid_check_loops` to control RFID test rounds, with each slot also governed by its own `rfid_enable` setting. Fixed autoload ending RFID reads early and stale dryer timers interrupting a later heating cycle.
+
+## Ver 0.1.0472
+
+- Added execution guards for manual commands including `MMS_CHARGE`, `MMS_EJECT`, `MMS_CUT`, `MMS_PURGE`, and `MMS_BRUSH`.
+- Removed legacy asynchronous loading, unloading, and stepper code. Simplified slot metadata file lookup and fixed Moonraker record filtering when non-numeric keys are present.
+- Fixed a tool change from slot 0 failing to pause the source buffer monitor.
+
+## Ver 0.1.0471
+
+- Corrected buffer spring-stroke bounds, refreshed capacity and target reserve after measurement, and adjusted calibration speed, acceleration, and the E monitoring range.
+- Corrected the log level for successful Moonraker synchronization and the slot log when unloading all slots is cancelled.
+
+## Ver 0.1.0470
+
+- Updated Moonraker slot synchronization and added an endpoint to delete one slot record. When Inlet releases, clear local filament and delivery-distance records for the slot and notify Moonraker.
+
+## Ver 0.1.0469
+
+- Expose the cutter endpoint and waste-tray coordinates through `get_status()` for the MMS panel in the Web UI.
+
+## Ver 0.1.0468
+
+- Fixed errors initializing or displaying a tool-change mapping when `filename` is missing.
+
+## Ver 0.1.0467
+
+- Fixed undefined variable references when synchronizing filament color or reading Fake AFC panel status.
+
+## Ver 0.1.0466
+
+- Added `print_finish_exec` to control automatic ejection and selector release after printing. Enabled by default.
+- Improved Fake AFC panel compatibility with slot mapping, backup-lane, and buffer information.
+
+## Ver 0.1.0465
+
+- Added interfaces to read, write, and delete MMS slot data in Moonraker for KlipperScreen and Fake AFC integration. Synchronization remained in development.
+
+## Ver 0.1.0461
+
+- Added a Moonraker adapter and moved slot data synchronization out of the main MMS class. Synchronization remained in development.
+
+## Ver 0.1.0460
+
+- Started integrating Moonraker slot data synchronization, including reporting changes to filament color and material. Added the `MMS_LOG` command.
+
+## Ver 0.1.0459
+
+- Fixed the bug where 'custom_before' was executed repeatedly in mms_brush
+
+## Ver 0.1.0458
+
+- Merged Klipper Main branch code into MMS, up to 2026-05-20
+
+## Ver 0.1.0455 ~ 0.1.0457
+
+- Optimized MMS Extend (multiple ViViD extension solution); changed from one-time rendering via JSON configuration reading to Klipper-style INI-CFG reading and dynamic generation
+
+## Ver 0.1.0454
+- Delivery: Added can_walk() check to restrict subsequent operations if MMS Drive/Selector is in motion
+
 ## Ver 0.1.0453
 
 - Modified the segmented behavior of Stepper:Drive feed/retract after distance verification; the first segment changed from fixed-distance movement to Homing (same as the second segment)

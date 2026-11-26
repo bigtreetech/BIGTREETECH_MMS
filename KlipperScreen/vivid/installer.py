@@ -2,12 +2,13 @@
 import logging
 import os
 import pathlib
-# import traceback
 
+# import traceback
 from dataclasses import dataclass
 from importlib import import_module
 
 import gi
+
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gtk
 
@@ -15,11 +16,15 @@ from gi.repository import Gtk
 from vivid.components.button import ImmutableImageButton
 from vivid.components.image import VividImage as VImage
 from vivid.components.utils import convert_css_to_gtk3
+from vivid.controllers.connection import subscribe_printer_objects
+
+_VIVID_PREPRINT_RESPONSE = 444
+_MISSING = object()
 
 
 @dataclass(frozen=True)
 class VividPanelConfig:
-    version: str = "0.2.0011"
+    version: str = "0.2.0042"
     welcome: str = "*"*10 + f" KlipperScreen for VVD/MMS Ver {version} Start up! " + "*"*10
     panel_prefix: str = "vivid/panels/"
 
@@ -28,19 +33,19 @@ def _advanced_load_panels(base_panel):
     """
     Advanced _load_panels()
 
-    KlipperScreen/ks_includes/screen_panel.py 
+    KlipperScreen/ks_includes/screen_panel.py
     :: base_panel.menu_item_clicked()
-    |-> KlipperScreen/ks_includes/screen_panel.py 
+    |-> KlipperScreen/ks_includes/screen_panel.py
         :: base_panel.screen.show_panel(item['panel'], **panel_args)
-            |-> KlipperScreen/screen.py 
+            |-> KlipperScreen/screen.py
                 :: show_panel()
                 :: _load_panel()
 
     Vivid panels connect should format like :
         "vivid/panels/main"
         vivid_button.connect(
-            "clicked", 
-            base_panel.menu_item_clicked, 
+            "clicked",
+            base_panel.menu_item_clicked,
             {"panel": "vivid/panels/main",}
         )
 
@@ -53,8 +58,10 @@ def _advanced_load_panels(base_panel):
         if panel.startswith(VividPanelConfig.panel_prefix):
             logging.debug(f"Loading panel: {panel}")
 
-            panel_filename = panel.split(os.path.sep)[-1]
-            vivid_panel_path = os.path.join(os.path.dirname(__file__), "panels", f"{panel_filename}.py")
+            panel_filename = panel.rsplit("/", 1)[-1]
+            vivid_panel_path = os.path.join(
+                os.path.dirname(__file__), "panels", f"{panel_filename}.py"
+            )
 
             if not os.path.exists(vivid_panel_path):
                 logging.error(f"Panel {panel} does not exist")
@@ -62,7 +69,7 @@ def _advanced_load_panels(base_panel):
             return import_module(f"vivid.panels.{panel_filename}")
 
         return org_load_panel(panel)
-    
+
     # Replace origin load_panel as the vivid version
     base_panel._screen._load_panel = _load_panel
     return base_panel
@@ -108,10 +115,10 @@ def _setup_action_bar(base_panel):
     Setup Vivid main button in Action bar
     """
     vivid_button = ImmutableImageButton(
-        hexpand=True, 
-        vexpand=True, 
-        can_focus=False, 
-        image_position=Gtk.PositionType.TOP, 
+        hexpand=True,
+        vexpand=True,
+        can_focus=False,
+        image_position=Gtk.PositionType.TOP,
         always_show_image=True)
 
     scale = base_panel._gtk.img_scale * base_panel.abscale * 2.0
@@ -143,6 +150,81 @@ def _click_vivid(widget, base_panel):
     base_panel._screen.show_panel(main_panel)
 
 
+def _install_subscription_hook(screen):
+    host_subscribe = screen.ws_subscribe
+
+    def ws_subscribe():
+        transport = screen._ws
+        api = getattr(transport, "api", None) or getattr(transport, "klippy", None)
+        if not callable(getattr(api, "object_subscription", None)):
+            return host_subscribe()
+
+        # Capture the complete subscription assembled by the host for this connection.
+        previous = vars(api).get("object_subscription", _MISSING)
+        api.object_subscription = lambda updates: subscribe_printer_objects(screen, updates)
+        try:
+            return host_subscribe()
+        finally:
+            if previous is _MISSING:
+                del api.object_subscription
+            else:
+                api.object_subscription = previous
+
+    screen.ws_subscribe = ws_subscribe
+
+
+def _install_preprint_hook(screen):
+    gtk = screen.gtk
+    host_dialog = gtk.Dialog
+
+    def dialog(title, buttons, content, callback=None, *args):
+        panel = getattr(callback, "__self__", None)
+        if (
+            getattr(callback, "__module__", None) != "panels.gcodes"
+            or getattr(panel, "_screen", None) is not screen
+            or callback != getattr(panel, "confirm_print_response", None)
+            or len(args) != 1
+        ):
+            return host_dialog(title, buttons, content, callback, *args)
+
+        if any(button["response"] == _VIVID_PREPRINT_RESPONSE for button in buttons):
+            return host_dialog(title, buttons, content, callback, *args)
+
+        def response(print_dialog, response_id, filename):
+            if response_id != _VIVID_PREPRINT_RESPONSE:
+                return callback(print_dialog, response_id, filename)
+            gtk.remove_dialog(print_dialog)
+            fileinfo = screen.files.get_file_info(filename) or {}
+            file_key = fileinfo.get("uuid") or filename
+            return screen.show_panel(
+                "vivid/panels/preprint",
+                panel_name=f"vivid/preprint/{file_key}",
+                gcode_file=filename,
+                parent_hook=panel.confirm_print,
+            )
+
+        print_buttons = list(buttons)
+        cancel_index = next(
+            (
+                i
+                for i, button in enumerate(buttons)
+                if button["response"] == Gtk.ResponseType.CANCEL
+            ),
+            len(buttons),
+        )
+        print_buttons.insert(
+            cancel_index,
+            {
+                "name": "ViViD",
+                "response": _VIVID_PREPRINT_RESPONSE,
+                "style": "dialog-info",
+            },
+        )
+        return host_dialog(title, print_buttons, content, response, *args)
+
+    gtk.Dialog = dialog
+
+
 """
 The base_panel is the "homepage" of KlipperScreen
 Call this function in screen.py(which have the main() of KlipperScreen)
@@ -151,7 +233,14 @@ def install_vivid(base_panel):
     """
     Install Vivid to main screen
     """
+    screen = base_panel._screen
+    if getattr(screen, "_vivid_installed", False):
+        return
+
     base_panel = _advanced_load_panels(base_panel)
     base_panel = _add_vivid_style(base_panel)
     _setup_action_bar(base_panel)
+    _install_subscription_hook(screen)
+    _install_preprint_hook(screen)
+    screen._vivid_installed = True
     logging.info(VividPanelConfig.welcome)

@@ -39,6 +39,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 
 from .config import PrinterConfig
+from .exceptions import MMSException
+from .filament_metadata import normalize_filament
 from .slot_led import SlotLED
 from .slot_meta import SlotMeta
 from .slot_pin import (
@@ -52,7 +54,10 @@ from .slot_pin import (
     SlotPinSelector
 )
 from .slot_rfid import SlotRFID
-from ..adapters import printer_adapter
+from ..adapters import (
+    moonraker_adapter,
+    printer_adapter
+)
 
 
 @dataclass(frozen=True)
@@ -105,12 +110,13 @@ class MMSSlot:
         # Extend support
         self._is_extended = False
         self._extend_num = None
-
         # Delivery support
         self._can_update_deliver_distance = False
+        # Withdrawn short tails may still cover Inlet. Runtime-only state.
+        self.cleanup_required = False
+        self._last_empty_state = None
 
         self._is_ready = False
-        self._last_empty_state = None
 
         # Initialize Pins
         self._initialize_pins()
@@ -153,6 +159,9 @@ class MMSSlot:
         # self.meta.pin_inlet = self.slot_config.inlet
         # self.meta.pin_gate = self.slot_config.gate
 
+        # File operations in SlotMeta log through the slot logger
+        self.meta.log_error = self.log_error
+
         self.meta.num = self.num
 
         self.meta.mms_buffer_index = self.mms_buffer.get_index()
@@ -173,9 +182,6 @@ class MMSSlot:
         self.meta.buffer_runout = self.buffer_runout
         self.meta.entry = self.entry
 
-        # self.meta.filament_color = self.filament_color
-        # self.meta.filament_material = self.filament_material
-
         cfg_path = printer_adapter.get_klippy_configfile()
         self.meta.set_cfg_path(cfg_path)
 
@@ -184,10 +190,10 @@ class MMSSlot:
             callback=self._init_led_notify,
             waketime=self.reactor.monotonic()+self.led_notify_delay
         )
-
         # Register led effect deactivate callback
         printer_adapter.register_mms_stepper_running(
             handler=self._handle_mms_stepper_running)
+
         self._last_empty_state = self.is_empty()
         self._is_ready = True
 
@@ -277,13 +283,6 @@ class MMSSlot:
     def get_selector_calibrate_distance(self):
         return self.slot_config.selector_calibrate_distance
 
-    def get_status(self, eventtime=None):
-        if not self._is_ready:
-            return {}
-        status = self.meta.report()
-        status["is_empty"] = self.is_empty()
-        return status
-
     # ---- RFID support ----
     # def rfid_is_enabled(self):
     #     return self.slot_config.rfid_enable
@@ -308,18 +307,6 @@ class MMSSlot:
             elif pin_state == self.pin_state.released:
                 return slot_pin.release(mcu_pin)
         return False
-
-    def set_filament_color(self, color_code):
-        self.meta.filament_color = color_code
-
-    def set_filament_material(self, material):
-        self.meta.filament_material = material
-
-    def set_spool_id(self, spool_id):
-        self.meta.spool_id = spool_id
-
-    def set_filament_info(self, info):
-        self.meta.filament_info = info or {}
 
     # ---- MMS LED support ----
     def get_led_name(self):
@@ -356,17 +343,17 @@ class MMSSlot:
             return True
         return False
 
-    def truncate_deliver_distance(self):
-        if self._can_update_deliver_distance:
-            self.meta.truncate_deliver_distance()
-            return True
-        return False
-
     @contextmanager
-    def update_deliver_distance(self):
+    def update_deliver_distance(self, replace=False):
+        previous = self.meta.deliver_vector
+        if replace:
+            self.meta.deliver_vector = {}
         self._can_update_deliver_distance = True
         try:
             yield
+        except BaseException:
+            self.meta.deliver_vector = previous
+            raise
         finally:
             self._can_update_deliver_distance = False
 
@@ -431,19 +418,6 @@ class MMSSlot:
 
         # Activate LED effect
         self.slot_led.activate_blinking()
-        # Register deactivate callback
-        # idle_timeout_adapter.register_busy_callback(
-        #     callback=self.slot_led.deactivate_blinking)
-
-        # e_type = type(exception)
-        # if e_type is DeliveryFailedError:
-        #     self._handle_delivery_triggered(exception)
-        # elif e_type is DeliveryPreconditionError:
-        #     self._handle_precondition_error(exception)
-        # elif e_type is DeliveryReadyError:
-        #     self._handle_ready_error(exception)
-        # else:
-        #     self._handle_generic_mms_exception(exception)
 
     def _handle_mms_stepper_running(self):
         self.slot_led.deactivate_blinking()
@@ -460,6 +434,7 @@ class MMSSlot:
         info += f"outlet={1 if self.outlet.is_triggered() else 0} "
         if self.entry.is_set():
             info += f"entry={1 if self.entry.is_triggered() else 0} "
+        info += f"cleanup_required={int(self.cleanup_required)} "
         info += "\n"
         return info
 
@@ -480,7 +455,39 @@ class MMSSlot:
         info += "\n"
         return info
 
-    # ---- Pin Status ----
+    # ---- Status ----
+    def get_status(self, eventtime=None):
+        if not self._is_ready:
+            return {}
+        return dict(self.meta.report(), cleanup_required=self.cleanup_required,
+                    is_empty=self.is_empty())
+
+    def mark_tail_withdrawn(self):
+        """Observe local sensors only after the withdrawal has drained."""
+        try:
+            self.inlet.refresh_state()
+            self.gate.refresh_state()
+        finally:
+            # Earlier runout/retraction edges cannot count as manual removal.
+            # Keep the exclusion if a final sensor query fails.
+            self.cleanup_required = True
+        self.update_cleanup_state()
+        if self.cleanup_required:
+            self.log_info(
+                f"slot[{self.num}] withdrawn remnant needs removal; "
+                "clear Inlet and Gate before inserting new filament")
+
+    def update_cleanup_state(self):
+        if (self.cleanup_required and self.inlet.is_released()
+                and self.gate.is_released()):
+            self.cleanup_required = False
+
+    def check_load_allowed(self):
+        if self.cleanup_required:
+            raise MMSException(
+                f"slot[{self.num}] needs remnant removal; clear Inlet and "
+                "Gate, then insert new filament and retry or RESUME", self)
+
     # Inlet is triggered
     def is_ready(self):
         """Check if inlet is triggered"""
@@ -503,36 +510,6 @@ class MMSSlot:
             lst.append(self.outlet.is_triggered())
         return all(lst)
 
-    # Inlet/gate/outlet/entry all released
-    def is_empty(self):
-        lst = [
-            self.inlet.is_released(),
-            self.gate.is_released(),
-            self.outlet.is_released()
-        ]
-        if self.entry.is_set():
-            lst.append(self.entry.is_released())
-        return all(lst)
-
-    def update_lane_data_empty_state(self):
-        is_empty = self.is_empty()
-        if self._last_empty_state is None:
-            self._last_empty_state = is_empty
-            return
-        if is_empty and not self._last_empty_state:
-            self._last_empty_state = True
-            # Physically empty, so clear internal filament info
-            self.set_filament_color(None)
-            self.set_filament_material(None)
-            self.set_spool_id(None)
-            self.set_filament_info({})
-            
-            mms = printer_adapter.get_mms()
-            if mms:
-                mms.notify_lane_data_changed([self.num])
-        elif not is_empty and self._last_empty_state:
-            self._last_empty_state = False
-
     def is_new_insert(self):
         return self.inlet.is_new_triggered()
 
@@ -544,6 +521,58 @@ class MMSSlot:
 
     def entry_is_triggered(self):
         return self.entry.is_set() and self.entry.is_triggered()
+
+    def is_empty(self):
+        # Inlet and Gate belong to one slot. Entry is shared, so its state
+        # may retain an accepted tail only for the slot that owns that tail.
+        if not (self.inlet.is_released() and self.gate.is_released()):
+            return False
+        if printer_adapter.get_mms_charge().get_charged_slot() != self.num:
+            return True
+        # Without Entry, neither upstream switch can prove that the
+        # accepted tail has cleared the toolhead.
+        if not self.entry_is_set():
+            return False
+        return self.entry.is_released()
+
+    def update_filament_presence(self, *, pin_changed=False):
+        empty = self.is_empty()
+        was_empty = self._last_empty_state
+        self._last_empty_state = empty
+        if empty and was_empty is False:
+            self.update_filament_metadata({}, replace=True)
+        # A Gate or Inlet edge can change the status color within an
+        # occupied slot. A downstream tail can clear without either edge.
+        if pin_changed or empty != was_empty:
+            self.slot_led.notify()
+
+    # ---- Slot Meta support ----
+    def update_filament_metadata(self, patch, replace=False):
+        self.meta.update_filament(patch, replace)
+        moonraker_adapter.changed(self.num, patch, replace)
+
+    def apply_rfid_metadata(self, tag):
+        patch = {
+            "vendor_name": tag.get("filament_manufacturer"),
+            "name": tag.get("filament_type_detailed") or tag.get("color_name_a"),
+            "material": tag.get("filament_material_type"),
+            "color": tag.get("color_code"),
+            "bed_temp": (tag.get("bed_temperature")
+                         or tag.get("bed_temerature_max")
+                         or tag.get("bed_temerature_min")),
+            "nozzle_temp": (tag.get("printing_temperature_min")
+                            or tag.get("printing_temperature_max")),
+            "filament_id": tag.get("filament_id"),
+        }
+        self.update_filament_metadata(normalize_filament(
+            {key: value for key, value in patch.items()
+             if value is not None}))
+
+    def truncate_meta(self):
+        self.update_filament_metadata({}, replace=True)
+        self.meta.truncate_deliver_distance()
+        self.log_info_s(
+            f"slot[{self.num}] filament/distance meta are truncated")
 
 
 def load_config(config):

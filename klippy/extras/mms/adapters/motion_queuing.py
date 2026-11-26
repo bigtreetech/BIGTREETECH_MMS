@@ -4,6 +4,12 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 
+from gcode import CommandError
+
+from ...motion_queuing import (
+    DRIP_SEGMENT_TIME,
+)
+
 from .base import BaseAdapter
 from .force_move import force_move_adapter
 
@@ -15,6 +21,28 @@ class MotionQueuingAdapter(BaseAdapter):
 
     def _get_motion_queuing(self):
         return self.safe_get(self._obj_name)
+
+    def run_native_motion(self, func, *args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except CommandError as error:
+            # Older cores expose this fatal C failure as a plain command error.
+            # Match only the native message; sensor/hook errors stay retryable.
+            if str(error) == "Internal error in stepcompress":
+                printer = self.printer
+                if not printer.is_shutdown():
+                    printer.invoke_shutdown(str(error))
+            raise
+
+    def register_feed_callback(self, callback):
+        # Run after toolhead has added E moves, before native step generation.
+        self._get_motion_queuing().register_flush_callback(callback)
+
+    def unregister_feed_callback(self, callback):
+        self._get_motion_queuing().unregister_flush_callback(callback)
+
+    def get_scan_delay(self):
+        return self._get_motion_queuing().get_kin_flush_delay()
 
     # ---- Base trapq control ----
     def allocate_trapq(self):
@@ -37,16 +65,47 @@ class MotionQueuingAdapter(BaseAdapter):
             note_mcu_movequeue_activity(end_print_time)
 
     def flush_all_steps(self):
-        return self._get_motion_queuing().flush_all_steps()
+        return self.run_native_motion(
+            self._get_motion_queuing().flush_all_steps)
 
     def drip_update_time(self, start_time, end_time, drip_completion):
-        return self._get_motion_queuing().\
-            drip_update_time(start_time, end_time, drip_completion)
+        mq = self._get_motion_queuing()
+        try:
+            self.run_native_motion(
+                mq.drip_update_time, start_time, end_time, drip_completion)
+        finally:
+            # Core's exception path may leave this invocation registered.
+            if start_time in mq.drip_start_times:
+                mq.drip_start_times.remove(start_time)
+                if not self.printer.is_shutdown():
+                    self.reactor.update_timer(mq.flush_timer, self.reactor.NOW)
+
+    def get_last_step_gen_time(self):
+        return self._get_motion_queuing().last_step_gen_time
+
+    def calc_step_gen_restart(self, print_time):
+        return self._get_motion_queuing().calc_step_gen_restart(print_time)
 
     def check_step_generation_scan_windows(self):
         return self._get_motion_queuing().check_step_generation_scan_windows()
 
     # ---- Advanced trapq control ----
+    def append_velocity(self, trapq, print_time, position, initial, target,
+                        accel, duration=None):
+        if duration is None:
+            duration = DRIP_SEGMENT_TIME
+        delta = target - initial
+        ramp = min(duration, abs(delta) / accel) if accel else 0.
+        signed_accel = (accel if delta >= 0. else -accel) if ramp else 0.
+        final = initial + signed_accel * ramp if ramp else target
+        self.lookup_trapq_append()(
+            trapq, print_time, ramp, duration - ramp, 0.,
+            position, 0., 0., 1., 0., 0.,
+            initial if ramp else final, final, signed_accel)
+        position += ((initial + final) * .5 * ramp
+                     + final * (duration - ramp))
+        return print_time + duration, position, final
+
     def setup_trapq(self, trapq, print_time, distance, speed, accel):
         """Configure trap queue with movement parameters"""
         # Calculate move params with distance
@@ -85,16 +144,10 @@ class MotionQueuingAdapter(BaseAdapter):
     def process_trapq(self, trapq, end_print_time):
         # Calculate time and update timer
         self.note_mcu_movequeue_activity(end_print_time)
-        # Flush to generate steps and wait movement finish
+        # Generate and submit steps; this does not wait for MCU execution.
         self.flush_all_steps()
         # Wipe old movement in trapq
         self.wipe_trapq(trapq)
-
-    def move(self, trapq, print_time, distance, speed, accel):
-        end_print_time = self.setup_trapq(
-            trapq, print_time, distance, speed, accel)
-        self.process_trapq(trapq, end_print_time)
-        return end_print_time
 
 
 # Global instance for singleton

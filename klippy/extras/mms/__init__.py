@@ -1,6 +1,6 @@
 # Package definition for the extras/mms directory
 #
-# Copyright (C) 2024-2025 Garvey Ding <garveyding@gmail.com>
+# Copyright (C) 2024-2026 Garvey Ding <garveyding@gmail.com>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 
@@ -8,6 +8,7 @@ import logging
 
 from .core import (
     extend,
+    extend_factory,
     logger,
     slot,
 )
@@ -41,6 +42,8 @@ def load_config(config):
 def load_config_prefix(config):
     load_map = {
         "extend": extend.load_config,
+        "extend_factory": extend_factory.load_config,
+
         "logger": logger.load_config,
         "slot": slot.load_config,
 

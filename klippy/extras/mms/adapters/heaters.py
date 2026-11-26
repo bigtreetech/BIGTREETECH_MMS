@@ -18,8 +18,28 @@ class HeatersAdapter(BaseAdapter):
     def find_heater(self, heater_name):
         return self._get_heaters().lookup_heater(heater_name)
 
-    def set_temperature(self, heater, temp, wait=True):
-        self._get_heaters().set_temperature(heater, temp, wait)
+    def set_temperature(self, heater, temp, wait=True, check=None):
+        if check is None:
+            self._get_heaters().set_temperature(heater, temp, wait)
+            return
+        check()
+        self._get_heaters().set_temperature(heater, temp, False)
+        if not wait or not temp:
+            return
+        if self.printer.get_start_args().get("debugoutput") is not None:
+            return
+        # Public Heater.check_busy works on both supported Klipper versions.
+        # Keep the owning MMS operation cancellable without patching Klipper's
+        # global heater wait or adding a second temperature controller.
+        while True:
+            check()
+            now = self.reactor.monotonic()
+            if not heater.check_busy(now):
+                return
+            self.reactor.pause(now + 0.25)
+
+    def turn_off_all_heaters(self):
+        self._get_heaters().turn_off_all_heaters()
 
 
 # Global instance for singleton

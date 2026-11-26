@@ -6,7 +6,7 @@
 
 import time
 from dataclasses import dataclass
-from typing import Callable, Dict, Optional
+from typing import Callable, Optional
 
 from .task import PeriodicTask
 from ..adapters import (
@@ -63,7 +63,6 @@ class PrintObserver:
 
     def _initialize_callback_managers(self):
         self.cb_manager = CallbackManager()
-        self.dcb_manager = DisposableCallbackManager()
         self.stp_manager = StepperRunningManager()
         # idle_timeout_adapter.setup_callback_manager()
 
@@ -92,7 +91,11 @@ class PrintObserver:
         if self.state_prev == self.state:
             return
 
-        if self.is_printing():
+        # CANCEL_PRINT can finish print_stats while its SD command still
+        # yields in product cleanup. The temporary pause flag may outlive it.
+        if self.is_finished():
+            self.progress = self.p_progress.finished
+        elif self.is_printing():
             if self._prev_paused():
                 self.progress = self.p_progress.resumed
             else:
@@ -101,8 +104,6 @@ class PrintObserver:
             self.progress = self.p_progress.pausing
         elif self.is_paused():
             self.progress = self.p_progress.paused
-        elif self.is_finished():
-            self.progress = self.p_progress.finished
         else:
             # No judgement, direct return
             return
@@ -110,7 +111,6 @@ class PrintObserver:
         self.log_info(f"print new progress: '{self.progress}'")
         # Trigger callbacks with new progress
         self.cb_manager.handle_event(self.progress)
-        self.dcb_manager.handle_event(self.progress)
 
     def _prev_paused(self):
         return self.progress == self.p_progress.paused
@@ -153,9 +153,6 @@ class PrintObserver:
 
     def register_pause_callback(self, callback, params=None):
         self.cb_manager.register_pause_callback(callback, params)
-
-    def register_resume_callback_disposable(self, callback, params=None):
-        self.dcb_manager.register_resume_callback(callback, params)
 
     def register_mms_stepper(self, mms_stepper, handler):
         self.stp_manager.register(mms_stepper, handler)
@@ -261,33 +258,6 @@ class CallbackManager:
                 continue
 
 
-class DisposableCallbackManager(CallbackManager):
-    def __init__(self):
-        super().__init__()
-
-    def handle_event(self, event_type):
-        callbacks = self.callbacks.get(event_type, [])
-        if not callbacks:
-            return
-
-        for callback, params in callbacks:
-            try:
-                callback(**params)
-                self.log_info(
-                    f"'{event_type}' disposable callback executed: {callback}")
-            except Exception as e:
-                self.log_error(
-                    f"'{event_type}' disposable callback error: {e}")
-                continue
-
-        # Finally truncate disposable callbacks
-        try:
-            self.callbacks[event_type]= []
-        except Exception as e:
-            self.log_error(
-                f"'{event_type}' disposable callback truncate error: {e}")
-
-
 @dataclass
 class StepperInfo:
     mms_stepper: object
@@ -296,13 +266,6 @@ class StepperInfo:
     # Default is None
     steps_moved: Optional[int] = None
     updated_at: Optional[float] = None
-
-    # @property
-    # def is_stalled(self, timeout):
-    #     if self.steps_moved is None or self.updated_at is None:
-    #         return False
-    #     return self.stepper.is_running() \
-    #         and (time.time() - self.updated_at) > timeout
 
     def is_running(self):
         return self.mms_stepper.is_running()
@@ -348,6 +311,7 @@ class StepperRunningManager:
         for s_info in self._steppers.values():
             # Skip if is not running
             if not s_info.is_running():
+                s_info.steps_moved = None
                 s_info.reset_timestamp()
                 continue
 
@@ -355,7 +319,8 @@ class StepperRunningManager:
             if s_info.update_if_changed(cur_steps):
                 continue
 
-            # Steps is not changed, check idle timeout
+            # A stationary owner may be waiting for queued motion or sync.
+            # Report once until steps change; never release its ownership.
             if s_info.is_idled():
                 s_info.handler()
                 s_info.reset_timestamp()

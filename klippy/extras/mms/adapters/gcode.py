@@ -7,6 +7,7 @@
 from gcode import GCodeCommand
 
 from .base import BaseAdapter
+from .motion_queuing import motion_queuing_adapter
 from .printer import printer_adapter
 
 
@@ -35,9 +36,10 @@ class GCodeAdapter(BaseAdapter):
             self._command_lst.append(command)
 
     def unregister(self, command):
-        self._get_gcode().register_command(command, None)
+        handler = self._get_gcode().register_command(command, None)
         if command in self._command_lst:
             self._command_lst.remove(command)
+        return handler
 
     def register_mux(self, cmd, key, value, func):
         self._get_gcode().register_mux_command(
@@ -48,11 +50,14 @@ class GCodeAdapter(BaseAdapter):
             desc = rest[0] if rest else None
             self.register(command, handler, desc)
 
-    def run_command(self, command):
+    def run_command(self, command, strict=False):
         if command:
             try:
-                self._get_gcode().run_script_from_command(command)
+                motion_queuing_adapter.run_native_motion(
+                    self._get_gcode().run_script_from_command, command)
             except Exception as e:
+                if strict:
+                    raise
                 self.log_error(
                     f"gcode adapter run command '{command}' error: {e}")
 

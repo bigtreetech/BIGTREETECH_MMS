@@ -1,8 +1,5 @@
 #!/bin/bash
 
-KLIPPY_VERSION=0.1.0449 # Important: Keep synced with 'klippy/extras/mms/mms.py'
-KLIPPER_SCREEN_VERSION=0.2.0011 # Important: Keep synced with 'KlipperScreen/vivid/installer.py'
-
 SCRIPTNAME="$0"
 ARGS=( "$@" )
 
@@ -36,6 +33,15 @@ SECTION="\n----------------"
 
 SHELL_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )"/ && pwd )"
 
+source_version() {
+    local version
+    version=$(sed -n -E 's/^[[:space:]]*version:[[:space:]]*str[[:space:]]*=[[:space:]]*"([0-9.]+)".*/\1/p' "$1")
+    printf '%s\n' "${version:-unknown}"
+}
+
+KLIPPY_VERSION=$(source_version "${SHELL_DIR}/klippy/extras/mms/mms.py")
+KLIPPER_SCREEN_VERSION=$(source_version "${SHELL_DIR}/KlipperScreen/vivid/installer.py")
+
 KLIPPER_HOME="${HOME}/klipper"
 KLIPPER_CONFIG_HOME="${HOME}/printer_data/config"
 
@@ -54,6 +60,7 @@ ks_src_dir="${SHELL_DIR}/${VIVID_DIR}"
 ks_dst_dir="${HOME}/${VIVID_DIR}"
 screen="$ks_dir/screen.py"
 gcodes="$ks_dir/panels/gcodes.py"
+ks_activate_pattern='^        self\.base_panel\.activate\(\)[[:space:]]*$'
 
 g_mms_dir="${KLIPPER_CONFIG_HOME}/bigtreetech-mms"
 g_mms_path="${g_mms_dir}/mms/mms.cfg"
@@ -69,14 +76,14 @@ g_log_en=1
 
 # The oldest version supported
 klipper_oldest_id="938300f3c3cc25448c499a3a8ca5b47b7a6d4fa8"
-# The latest version supported. usually is the latest version of the upstream
-klipper_latest_id="373f200ca69adb624675f42e685f61d85d49ba40"
+# Upstream baseline used for candidate verification.
+klipper_latest_id="7558e8c2f6f3f2ca4b5ff1ddd85d2b82f0c3881d"
 # Klipper supports AHT30 and no longer requires patching after this commit
 aht30_patch_id="1f43be0b8b55d90753578d06ac06356d1ab9a768"
 # The oldest version supported
 ks_oldest_id="b3115f9b9b329642d4dbf0ad225ab065ea3eda80"
-# The latest version supported. usually is the latest version of the upstream
-ks_latest_id="056831910087a858908f9f5d117ad5c50446e729"
+# Upstream baseline used for candidate verification.
+ks_latest_id="22604c770ce199edd057c095680ec8751184765e"
 
 log_enable() {
     g_log_en=1
@@ -92,15 +99,6 @@ log_echo() {
     fi
     log_text=${1}
     echo -e "${log_text}${INPUT}"
-}
-
-function nextfilename {
-    local name="$1"
-    if [ -d "${name}" ]; then
-        printf "%s-%s" ${name} $(date '+%Y%m%d_%H%M%S')
-    else
-        printf "%s-%s.%s-old" ${name%.*} $(date '+%Y%m%d_%H%M%S') ${name##*.}
-    fi
 }
 
 prompt_yn() {
@@ -203,7 +201,7 @@ verify_version() {
     local oldest=$3
     local latest=$4
 
-    if [ -d "${dir}" ] && [ "${UPDATE}" != 1 ]; then
+    if [ -d "${dir}" ] && [ "${UNINSTALL}" != 1 ]; then
         local commit_id=$(git -C "${dir}" log -n 1 --pretty=%H)
         local err_oldest=""
         local err_lastest=""
@@ -219,10 +217,10 @@ verify_version() {
         fi
 
         if [ ! -z "${err_oldest}" ] || [ ! -z "${err_lastest}" ]; then
-            local commit_id=$(git -C ${dir} describe --tags --always)
+            local commit_id=$(git -C "${dir}" describe --tags --always)
             log_echo "${TITLE}${SECTION}"
             log_echo "${WARNING}Your ${name} version is: ${PURPLE}${commit_id}${WARNING}
-not between ${PURPLE}${oldest}${WARNING} and ${PURPLE}${latest}${WARNING}
+outside the verified baselines ${PURPLE}${oldest}${WARNING} and ${PURPLE}${latest}${WARNING}
 ${err_oldest}${err_lastest}may not be suitable, it is best to update ${name} version as suggested."
             yn=$(prompt_yn "I confirm that this version of ${name} is compatible with ViViD.")
             echo
@@ -348,7 +346,10 @@ set_purge_brush() {
 }
 
 set_klipper_screen() {
-    # KlipperScreen
+    if [ ! -d "${ks_dir}" ]; then
+        return
+    fi
+
     log_echo "${TITLE}${SECTION}"
     log_echo "${PROMPT}Installing ${PURPLE}KlipperScreen for ViViD${PROMPT} will add a ViViD management menu to KlipperScreen."
     yn=$(prompt_yn "Install KlipperScreen?")
@@ -361,7 +362,7 @@ set_klipper_screen() {
 }
 
 get_version() {
-    VIVID_VER=$(git describe --tags --always)
+    VIVID_VER=$(git -C "${SHELL_DIR}" describe --tags --always 2>/dev/null || printf "%s" "unversioned candidate")
     log_echo "${TITLE}${SECTION}"
     log_echo "${INFO}ViViD script: ${B_GREEN}${VIVID_VER}"
     log_echo "${INFO}Klipper: ${B_GREEN}${KLIPPY_VERSION}"
@@ -375,7 +376,7 @@ install_klippy() {
     if [ -d "${extras_dst_dir}" ]; then
         # link extras/mms/*.py
         # cd to ViViD source code path
-        cd "${extras_src_dir}"
+        cd "${extras_src_dir}" || abort "Could not read ${extras_src_dir}"
         # traverse directory
         find . -type d | while IFS= read -r tmp_dir; do
             # remove '.'
@@ -384,14 +385,14 @@ install_klippy() {
             src_dir="${extras_src_dir}${tmp_dir}"
             dst_dir="${extras_dst_dir}${tmp_dir}"
             # create the same extension directory in klipper path
-            mkdir -p "${dst_dir}"
+            mkdir -p "${dst_dir}" || exit 1
             # ban the null value, such as: don't set "*.py" to the value of 'file'
             shopt -s nullglob
-            for file in ${src_dir}/*.py; do
-                ln -sf "${file}" "${dst_dir}/$(basename "${file}")"
+            for file in "${src_dir}"/*.py; do
+                ln -sf "${file}" "${dst_dir}/$(basename "${file}")" || exit 1
             done
             shopt -u nullglob
-        done
+        done || abort "Could not link the ViViD Klipper module"
         log_echo "${INFO}ViViD ${PURPLE}${extras_dst_dir}${INFO} link completed!"
         # patch neopixel
         if [[ -f "${neopixel}" ]]; then
@@ -427,7 +428,7 @@ uninstall_klippy() {
     log_echo "${INFO}Unlinking ViViD from Klipper..."
     if [ -d "${extras_dst_dir}" ]; then
         # unlink extras/mms/*.py
-        rm -rf "${extras_dst_dir}/mms"
+        rm -rf "${extras_dst_dir}/mms" || abort "Could not unlink the ViViD Klipper module"
         log_echo "${PURPLE}${extras_dst_dir}${INFO} removed!"
         # unpatch neopixel
         if [[ -f "${neopixel}" ]]; then
@@ -450,46 +451,130 @@ uninstall_klippy() {
 }
 
 copy_config_files() {
-    local dst_dir="${KLIPPER_CONFIG_HOME}/bigtreetech-mms"
-    local next_dst_dir="$(nextfilename "${dst_dir}")"
+    local mode=$1
+    local dst_dir="${g_mms_dir}"
+    local old_config="${g_old_config_path}"
     local src_dir="${SHELL_DIR}/config/bigtreetech-mms"
+    local backup="" staging relative old_dir
 
-    if [ -d "${dst_dir}" ]; then
-        mv "${dst_dir}" "${next_dst_dir}"
-        log_echo "${INFO}Old config backup completed: ${PURPLE}${next_dst_dir}"
-        g_old_config_path="${next_dst_dir}/mms/mms.cfg"
+    if [[ -z "${old_config}" && -f "${g_mms_path}" ]]; then
+        old_config="${g_mms_path}"
     fi
-    log_echo "${INFO}Copying ${PURPLE}${src_dir}${INFO} into ${PURPLE}${dst_dir}${INFO} directory..."
-    cp -r "${src_dir}" "${dst_dir}"
-}
 
-cleaup_old_resource() {
-    local printer_cfg="${KLIPPER_CONFIG_HOME}/printer.cfg"
-    local old_mms_sed_1='\[include sample-bigtreetech-mms/mms.cfg\]'
-    local old_mms_sed_2='\[include sample-bigtreetech-mms/mms/mms.cfg\]'
-    sed -i -e "\|${old_mms_sed_1}|d" "$printer_cfg"
-    sed -i -e "\|${old_mms_sed_2}|d" "$printer_cfg"
-}
-
-include_exclude_config_files() {
-    local include=$1
-    local printer_cfg="${KLIPPER_CONFIG_HOME}/printer.cfg"
-    local mms_sed='\[include bigtreetech-mms/mms/mms.cfg\]'
-    if [ -f "${printer_cfg}" ]; then
-        if [ "${include}" -eq 0 ]; then
-            sed -i -e "\|${mms_sed}|d" "$printer_cfg"
-            log_echo "${INFO}ViViD config has been removed from ${PURPLE}${printer_cfg}"
+    staging=$(mktemp -d "${KLIPPER_CONFIG_HOME}/.vivid-config.XXXXXX") ||
+        abort "Could not prepare a temporary ViViD configuration"
+    if ! (
+        cp -r -- "${src_dir}/." "${staging}" || exit 1
+        if [ -d "${dst_dir}" ]; then
+            chmod --reference="${dst_dir}" "${staging}" || exit 1
         else
-            local already_included=$(grep -c "^${mms_sed}" ${printer_cfg} || true)
-            if [ "${already_included}" -eq 0 ]; then
-                sed -i "1i ${mms_sed}" ${printer_cfg}
-                log_echo "${INFO}ViViD config has been added to ${PURPLE}${printer_cfg}"
-            else
-                log_echo "${INFO}ViViD config already exists in ${PURPLE}${printer_cfg}${INFO} there is no need to add it again"
+            chmod --reference="${src_dir}" "${staging}" || exit 1
+        fi
+        if [ -n "${old_config}" ]; then
+            old_dir="${old_config%/*}"
+            if [[ "${old_dir}" == */mms ]]; then
+                old_dir="${old_dir%/mms}"
+            fi
+            for relative in mms-slot-meta.json extend/mms-extend.cfg extend/mms-extend-factory.cfg; do
+                if [ -f "${old_dir}/${relative}" ]; then
+                    cp -p -- "${old_dir}/${relative}" "${staging}/${relative}" || exit 1
+                fi
+            done
+            if [[ -f "${old_dir}/mms/mms-includes.cfg" ]] &&
+                grep -Eq '^[[:space:]]*\[include[[:space:]]+\.\./extend/mms-extend\.cfg\][[:space:]]*([#;].*)?$' \
+                    "${old_dir}/mms/mms-includes.cfg"; then
+                printf '\n[include ../extend/mms-extend.cfg]\n' >> "${staging}/mms/mms-includes.cfg" || exit 1
             fi
         fi
-    else
-        log_echo "${WARNING}Klipper config file ${PURPLE}${printer_cfg}${WARNING} not found!"
+        g_mms_dir="${staging}"
+        g_mms_path="${staging}/mms/mms.cfg"
+        g_old_config_path="${old_config}"
+        if [ "${mode}" = install ]; then
+            set_user_config
+        else
+            sync_config_opt_enable "{}" && sync_config_val_copy "{}"
+        fi
+    ); then
+        rm -rf -- "${staging}"
+        abort "Could not migrate the ViViD configuration. The installed configuration was kept."
+    fi
+
+    if [[ -d "${dst_dir}" ]]; then
+        backup=$(mktemp -d "${dst_dir}-$(date '+%Y%m%d_%H%M%S')-XXXXXX") || {
+            rm -rf -- "${staging}"
+            abort "Could not create a ViViD configuration backup"
+        }
+        if ! mv -T -- "${dst_dir}" "${backup}"; then
+            rmdir -- "${backup}"
+            rm -rf -- "${staging}"
+            abort "Could not back up ${dst_dir}"
+        fi
+    fi
+    if ! mv -T -- "${staging}" "${dst_dir}"; then
+        if [[ -n "${backup}" ]] && ! mv -T -- "${backup}" "${dst_dir}"; then
+            log_echo "${ERROR}Could not restore the original configuration from ${backup}"
+        fi
+        rm -rf -- "${staging}"
+        abort "Could not install the new ViViD configuration"
+    fi
+    if [[ -n "${backup}" ]]; then
+        log_echo "${INFO}Old config backup completed: ${PURPLE}${backup}"
+    fi
+}
+
+edit_vivid_config() {
+    local kind=$1 mode=$2 file
+    shift 2
+    case "${kind}" in
+        klipper) file="${KLIPPER_CONFIG_HOME}/printer.cfg" ;;
+        moonraker) file="${KLIPPER_CONFIG_HOME}/moonraker.conf" ;;
+    esac
+    python3 -B "${SHELL_DIR}/scripts/install_config.py" "${kind}" "${mode}" "${file}" "$@"
+}
+
+verify_linked_module() {
+    local checkout=$1 relative=$2 suffix=$3 target="$1/$2"
+    local tracked unexpected link
+    tracked=$(git -C "${checkout}" ls-files -- "${relative}" 2>/dev/null) || tracked=""
+    if [[ -n "${tracked}" ]]; then
+        abort "The ViViD installer cannot replace or remove Git-managed files in ${target}"
+    fi
+    if [[ ! -e "${target}" && ! -L "${target}" ]]; then
+        return
+    fi
+
+    if [[ -L "${target}" && "${relative}" == *.py ]]; then
+        [[ "$(readlink -- "${target}")" == */"${suffix}" ]] ||
+            abort "The existing link at ${target} is not a ViViD installer link"
+        return
+    fi
+    if [[ ! -d "${target}" || -L "${target}" ]]; then
+        abort "The ViViD installer cannot replace or remove unmanaged path ${target}"
+    fi
+    unexpected=$(find "${target}" ! -type d ! -type l \
+        ! \( -type f -path '*/__pycache__/*.pyc' \) -print -quit) ||
+        abort "Could not inspect ${target}"
+    if [[ -n "${unexpected}" ]]; then
+        abort "The ViViD installer cannot remove unmanaged file ${unexpected}"
+    fi
+    while IFS= read -r -d '' link; do
+        if [[ "$(readlink -- "${link}")" != */"${suffix}/${link#"${target}/"}" ]]; then
+            abort "The existing link at ${link} is not a ViViD installer link"
+        fi
+    done < <(find "${target}" -type l -print0)
+}
+
+verify_install_layout() {
+    local mode=$1
+    verify_linked_module "${KLIPPER_HOME}" "${EXTRAS_DIR}/mms" "${EXTRAS_DIR}/mms"
+    verify_linked_module "${ks_dir}" vivid "${VIVID_DIR}"
+    verify_linked_module "${MOONRAKER_COMPONENTS_DIR}" mms_server.py moonraker/components/mms_server.py
+
+    g_old_config_path=$(edit_vivid_config klipper "${mode}" --check) ||
+        abort "Could not prepare the Klipper configuration"
+    if [[ "${mode}" == remove || -d "${MOONRAKER_COMPONENTS_DIR}" ]]; then
+        edit_vivid_config moonraker "${mode}" --check ||
+            abort "Could not prepare the Moonraker configuration"
     fi
 }
 
@@ -499,60 +584,57 @@ install_moonraker() {
     if [ -d "${MOONRAKER_COMPONENTS_DIR}" ]; then
         local src_file="${SHELL_DIR}/moonraker/components/mms_server.py"
         local dst_file="${MOONRAKER_COMPONENTS_DIR}/mms_server.py"
-        ln -sf "${src_file}" "${dst_file}"
-        log_echo "${INFO}ViViD Moonraker component linked to ${PURPLE}${dst_file}${INFO}!"
-        
-        # Auto-configure moonraker.conf
-        local moonraker_cfg="${KLIPPER_CONFIG_HOME}/moonraker.conf"
-        if [ -f "${moonraker_cfg}" ]; then
-            if ! grep -q "\[mms_server\]" "${moonraker_cfg}"; then
-                echo -e "\n[mms_server]\nenable_file_preprocessor: True\nenable_toolchange_next_pos: True" >> "${moonraker_cfg}"
-                log_echo "${INFO}Added ${PURPLE}[mms_server]${INFO} to ${PURPLE}${moonraker_cfg}"
-            else
-                log_echo "${INFO}${PURPLE}[mms_server]${INFO} already exists in ${PURPLE}${moonraker_cfg}"
-            fi
+        ln -sf "${src_file}" "${dst_file}" || abort "Could not link ${dst_file}"
+        if [ -f "${KLIPPER_CONFIG_HOME}/moonraker.conf" ]; then
+            edit_vivid_config moonraker install ||
+                abort "Could not configure the ViViD Moonraker component"
         else
-            log_echo "${WARNING}Moonraker config file ${PURPLE}${moonraker_cfg}${WARNING} not found! Please add [mms_server] manually."
+            log_echo "${WARNING}moonraker.conf not found. Add [mms_server] to your Moonraker configuration."
         fi
+        log_echo "${INFO}ViViD Moonraker component linked to ${PURPLE}${dst_file}${INFO}"
     else
-        log_echo "${WARNING}Moonraker components directory not found at ${PURPLE}${MOONRAKER_COMPONENTS_DIR}${WARNING}. Skipping Moonraker component installation."
+        log_echo "${WARNING}Moonraker components directory not found at ${MOONRAKER_COMPONENTS_DIR}. Skipping component installation."
     fi
 }
 
 uninstall_moonraker() {
     log_echo "${TITLE}${SECTION}"
     log_echo "${INFO}Unlinking ViViD Moonraker component..."
+    edit_vivid_config moonraker remove ||
+        abort "Could not remove the ViViD Moonraker configuration"
     local dst_file="${MOONRAKER_COMPONENTS_DIR}/mms_server.py"
     if [ -L "${dst_file}" ]; then
-        rm -f "${dst_file}"
-        log_echo "${PURPLE}${dst_file}${INFO} removed!"
+        rm -f "${dst_file}" || abort "Could not unlink ${dst_file}"
+        log_echo "${INFO}Removed ${dst_file}"
     fi
+}
 
-    # Remove configuration from moonraker.conf
-    local moonraker_cfg="${KLIPPER_CONFIG_HOME}/moonraker.conf"
-    if [ -f "${moonraker_cfg}" ]; then
-        # Remove [mms_server] and the two following lines
-        sed -i '/\[mms_server\]/,+2d' "${moonraker_cfg}"
-        log_echo "${INFO}Removed ${PURPLE}[mms_server]${INFO} from ${PURPLE}${moonraker_cfg}"
+verify_KlipperScreen_startup() {
+    if [ ! -f "${ks_src_dir}/installer.py" ]; then
+        abort "Cannot find the ViViD KlipperScreen module in ${ks_src_dir}"
+    fi
+    if [[ ! -f "${screen}" || $(grep -Ec "${ks_activate_pattern}" "${screen}") != 1 ]]; then
+        abort "Cannot locate the KlipperScreen startup hook in ${screen}"
     fi
 }
 
 unpatch_KlipperScreen() {
-    # unpatch screen.py
+    local start_line end_line
+
+    # Remove the startup hook and the legacy direct subscription patch.
     if [[ -f "${screen}" ]]; then
         sed -i -e '/^[[:space:]]*from[[:space:]]\+vivid\.installer[[:space:]]\+import[[:space:]]\+install_vivid[[:space:]]*$/d' \
                 -e '/^[[:space:]]*install_vivid(self\.base_panel)[[:space:]]*$/d' \
                 -e '/^[[:space:]]*requested_updates\['\''objects'\''\]\["mms"\][[:space:]]*=[[:space:]]*\["slots", "steppers", "buffers"\][[:space:]]*$/d' \
-                "${screen}"
+                "${screen}" || return 1
     fi
-    # unpatch panels/gcodes.py
+    # Older installers added the ViViD print button directly to gcodes.py.
     if [[ -f "${gcodes}" ]]; then
-        sed -i "\|^[[:space:]]*{\"name\": \"ViViD\", \"response\": 444, \"style\": 'dialog-info'},$|d" "${gcodes}"
-        start_line=$(grep -n -F -m1 'response_id == 444' "${gcodes}" | cut -d: -f1)
+        sed -i "\|^[[:space:]]*{\"name\": \"ViViD\", \"response\": 444, \"style\": 'dialog-info'},$|d" "${gcodes}" || return 1
+        start_line=$(grep -nE -m1 '^[[:space:]]*elif response_id == 444:[[:space:]]*$' "${gcodes}" | cut -d: -f1)
         end_line=$(grep -n -F -m1 'parent_hook = self.confirm_print,' "${gcodes}" | cut -d: -f1)
-        if [ "$start_line" ] && [ "$end_line" ]; then
-            delete_end=$((end_line + 1))
-            sed -i "${start_line},${delete_end}d" "${gcodes}"
+        if [[ -n "${start_line}" && -n "${end_line}" && $start_line -lt $end_line ]]; then
+            sed -i "${start_line},$((end_line + 1))d" "${gcodes}" || return 1
         fi
     fi
 }
@@ -584,54 +666,15 @@ install_KlipperScreen() {
 
         log_echo "${INFO}ViViD ${PURPLE}${ks_dst_dir}${INFO} link completed!"
 
-        # unpatch, avoid duplicate patches
-        unpatch_KlipperScreen
+        # Remove any old hooks before inserting the startup entry.
+        unpatch_KlipperScreen || abort "Could not remove the old KlipperScreen hooks"
 
-        # patch screen.py
-        if [[ -f "${screen}" ]]; then
-            sed -i '/^from[[:space:]]\+panels\.base_panel[[:space:]]\+import[[:space:]]\+BasePanel$/a\
-from vivid.installer import install_vivid' "${screen}"
-            sed -i '/^[[:space:]]*self\.base_panel\.activate()[[:space:]]*$/i\
-        install_vivid(self.base_panel)' "$screen"
-            sed -i '/^[[:space:]]*self\._ws\.klippy\.object_subscription(requested_updates)[[:space:]]*$/i\
-        requested_updates['\''objects'\'']["mms"] = ["slots", "steppers", "buffers"]' "${screen}"
-
-            log_echo "${INFO}ViViD KlipperScreen ${PURPLE}${screen}${INFO} patch completed!"
-        else
-            log_echo "${WARNING}ViViD KlipperScreen ${PURPLE}${screen}${WARNING} not patched!"
-        fi
-
-        # patch gcodes
-        if [[ -f "${gcodes}" ]]; then
-            new_gcode=$(mktemp)
-cat >"$new_gcode" <<'EOF'
-        elif response_id == 444:
-            # "RESPONSETYPE_VIVID" -> 444
-            # Get UUID as panel unique mark for panel
-            fileinfo = self._screen.files.get_file_info(filename)
-            file_uuid = fileinfo.get("uuid", None)
-            unq_remark = file_uuid or filename
-
-            # For ViViD
-            self._screen.show_panel(
-                "vivid/panels/preprint",
-                # Use an unique_panel_name here,
-                # panel_name is the cache key of KlipperScreen's show_panel()
-                panel_name = f"vivid/preprint/${unq_remark}",
-                gcode_file = filename,
-                parent_hook = self.confirm_print,
-            )
-EOF
-
-            sed -i '/^[[:space:]]*buttons[[:space:]]*=[[:space:]]*\[/a\
-            {"name": "ViViD", "response": 444, "style": '\''dialog-info'\''},' "${gcodes}"
-
-            sed -i '\|^[[:space:]]*self.confirm_delete_file(None,[[:space:]]*f"gcodes/{filename}")[[:space:]]*$|r '"${new_gcode}"'' "${gcodes}"
-            rm -f "$new_gcode"
-            log_echo "${INFO}ViViD KlipperScreen ${PURPLE}${gcodes}${INFO} patch completed!"
-        else
-            log_echo "${WARNING}ViViD KlipperScreen ${PURPLE}${gcodes}${WARNING} not patched!"
-        fi
+        # ViViD registers the subscription and print dialog hooks at startup.
+        sed -i -E "/${ks_activate_pattern}/i\\
+        from vivid.installer import install_vivid\\
+        install_vivid(self.base_panel)" "${screen}" ||
+            abort "Could not patch the KlipperScreen startup hook in ${screen}"
+        log_echo "${INFO}ViViD KlipperScreen ${PURPLE}${screen}${INFO} patch completed!"
     else
         abort "ViViD KlipperScreen not installed because ${PURPLE}${ks_dir}${ERROR} directory not found!"
     fi
@@ -642,13 +685,11 @@ uninstall_KlipperScreen() {
     log_echo "${TITLE}${SECTION}"
     log_echo "${INFO}Unlinking ViViD from KlipperScreen..."
     if [ -d "${ks_dir}" ]; then
-        # unlink KlipperScreen/vivid/*.{py,css,svg}
-        rm -rf "${ks_dst_dir}"
-        log_echo "${PURPLE}${ks_dst_dir}${INFO} removed!"
-
-        # unpatch screen.py & panels/gcodes.py
-        unpatch_KlipperScreen
+        unpatch_KlipperScreen || abort "Could not remove the KlipperScreen hooks"
         log_echo "${PURPLE}${screen}${INFO} & ${PURPLE}${gcodes}${INFO} for ViViD unpatched!"
+
+        rm -rf "${ks_dst_dir}" || abort "Could not remove ${ks_dst_dir}"
+        log_echo "${PURPLE}${ks_dst_dir}${INFO} removed!"
 
         log_echo "${INFO}ViViD for KlipperScreen uninstallation completed!"
     else
@@ -658,23 +699,23 @@ uninstall_KlipperScreen() {
 
 sync_config_opt_enable() {
     config_opt=$1
-    python3 "${SHELL_DIR}/scripts/config_opt_enable.py" "${g_mms_path}" "${g_old_config_path}" "${config_opt}"
+    python3 -B "${SHELL_DIR}/scripts/config_opt_enable.py" "${g_mms_path}" "${g_old_config_path}" "${config_opt}"
 }
 
 sync_config_val_copy() {
     config_val=$1
-    python3 "${SHELL_DIR}/scripts/config_val_copy.py" "${g_mms_path}" "${g_old_config_path}" "${config_val}"
+    python3 -B "${SHELL_DIR}/scripts/config_val_copy.py" "${g_mms_path}" "${g_old_config_path}" "${config_val}"
 }
 
 set_user_config() {
-    local base_dir="${g_mms_dir}/base"
+    local base_dir="${KLIPPER_CONFIG_HOME}/bigtreetech-mms/base"
     local cut_path="${base_dir}/mms-cut.cfg"
     local purge_brush_path="${base_dir}/mms-purge.cfg"
 
     # aht30 config [ATH10/AHT3X]
     if [ "${g_aht30_patch}" == 1 ]; then
         local aht30_cfg="${g_mms_dir}/hardware/mms-heater.cfg"
-        sed -i 's/sensor_type:          AHT3X/sensor_type:          AHT10/g' "${aht30_cfg}"
+        sed -i 's/sensor_type:          AHT3X/sensor_type:          AHT10/g' "${aht30_cfg}" || return 1
     fi
 
     log_echo "${PURPLE}Cutter${INFO} must be configured, please configure the specific position in ${PURPLE}${cut_path}"
@@ -682,7 +723,7 @@ set_user_config() {
     # entry sensor
     export entry_sensor=${g_entry_sensor}
     if [ "${g_entry_sensor}" -eq 1 ]; then
-        log_echo "${PURPLE}Entry Sensor${INFO} has been enabled, please configure the specific pin in ${PURPLE}${g_mms_path}"
+        log_echo "${PURPLE}Entry Sensor${INFO} has been enabled, please configure the specific pin in ${PURPLE}${KLIPPER_CONFIG_HOME}/bigtreetech-mms/mms/mms.cfg"
     fi
 
     # purge_brush
@@ -694,14 +735,14 @@ set_user_config() {
 
     # vivid seral id
     if [ -z "${g_vivid_id}" ]; then
-        log_echo "${WARNING}ViViD MCU serial id has not been set. Please modify it manually in ${PURPLE}${g_mms_path}"
+        log_echo "${WARNING}ViViD MCU serial id has not been set. Please modify it manually in ${PURPLE}${KLIPPER_CONFIG_HOME}/bigtreetech-mms/mms/mms.cfg"
     else
         log_echo "${INFO}ViViD Serial ID: ${PURPLE}${g_vivid_id}"
         export vivid_id="/dev/serial/by-id/${g_vivid_id}"
     fi
     # buffer seral id
     if [ -z "${g_buffer_id}" ]; then
-        log_echo "${WARNING}Buffer MCU serial id has not been set. Please modify it manually in ${PURPLE}${g_mms_path}"
+        log_echo "${WARNING}Buffer MCU serial id has not been set. Please modify it manually in ${PURPLE}${KLIPPER_CONFIG_HOME}/bigtreetech-mms/mms/mms.cfg"
     else
         log_echo "${INFO}Buffer Serial ID: ${PURPLE}${g_buffer_id}"
         export buffer_id="/dev/serial/by-id/${g_buffer_id}"
@@ -717,7 +758,7 @@ data = {
 }
 print(json.dumps(data, ensure_ascii=False))
 '`
-    sync_config_opt_enable "${config_opt}"
+    sync_config_opt_enable "${config_opt}" || return 1
 
 config_val=`python3 -c '
 import json
@@ -756,35 +797,35 @@ prompt_service_restart() {
 }
 
 install_vivid() {
-    # uninstall for cleanup
-    log_disable
-    cleaup_old_resource
-    uninstall_klippy
-    uninstall_moonraker
-    include_exclude_config_files 0
-    uninstall_KlipperScreen
-    log_enable
-
     set_serial_id
     set_cutter
     set_entry_sensor
     set_purge_brush
+    set_klipper_screen
+    if [ "${g_klippe_screen}" -eq 1 ]; then
+        verify_KlipperScreen_startup
+    fi
+
+    verify_install_layout install
+    copy_config_files install
+
+    # uninstall for cleanup
+    log_disable
+    uninstall_klippy
+    uninstall_KlipperScreen
+    log_enable
 
     install_klippy
     install_moonraker
 
-    log_echo "${TITLE}${SECTION}"
-    # vivid config files
-    copy_config_files
-    set_user_config
-    # include in printer.cfg
-    include_exclude_config_files 1
-    prompt_service_restart klipper installed
-    prompt_service_restart moonraker installed
-
-    set_klipper_screen
+    edit_vivid_config klipper install || abort "Could not install the ViViD configuration"
     if [ "${g_klippe_screen}" -eq 1 ]; then
         install_KlipperScreen
+    fi
+
+    prompt_service_restart klipper installed
+    prompt_service_restart moonraker installed
+    if [ "${g_klippe_screen}" -eq 1 ]; then
         prompt_service_restart KlipperScreen installed
     fi
 
@@ -805,24 +846,23 @@ install_vivid() {
 update_vivid() {
     if [ -d "${ks_dst_dir}" ]; then
         g_klippe_screen=1
+        verify_KlipperScreen_startup
     else
         g_klippe_screen=0
     fi
+    verify_install_layout update
+    copy_config_files update
+
     # uninstall for cleanup
     log_disable
-    cleaup_old_resource
     uninstall_klippy
-    uninstall_moonraker
     uninstall_KlipperScreen
     log_enable
 
     # reinstall klipper
     install_klippy
     install_moonraker
-    log_echo "${TITLE}${SECTION}"
-    copy_config_files
-    sync_config_opt_enable "{}"
-    sync_config_val_copy "{}"
+    edit_vivid_config klipper update || abort "Could not update the ViViD configuration"
     # reinstall KlipperScreen
     if [ "${g_klippe_screen}" -eq 1 ]; then
         install_KlipperScreen
@@ -841,16 +881,17 @@ update_vivid() {
 }
 
 uninstall_vivid() {
-    cleaup_old_resource
-
+    verify_install_layout remove
+    edit_vivid_config klipper remove || abort "Could not remove the ViViD Klipper configuration"
     uninstall_klippy
     uninstall_moonraker
-    include_exclude_config_files 0
     prompt_service_restart klipper uninstalled
     prompt_service_restart moonraker uninstalled
 
-    uninstall_KlipperScreen
-    prompt_service_restart KlipperScreen uninstalled
+    if [ -d "${ks_dir}" ]; then
+        uninstall_KlipperScreen
+        prompt_service_restart KlipperScreen uninstalled
+    fi
 
     log_echo "${GREEN}ViViD uninstallation is complete."
 }

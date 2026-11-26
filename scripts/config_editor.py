@@ -286,6 +286,7 @@ class ConfigEditor:
 
             in_target_section = False
             found_option_key = False
+            option_indent = 0
 
             for line_num, str_line in enumerate(str_lines):
                 # original_line = lines[line_num]
@@ -299,32 +300,30 @@ class ConfigEditor:
 
                 # find seciton
                 section_line = valid_line.strip() # remove whitespace character in head and tail
-                if section_line.startswith('['):
-                    idx = section_line.find(']', 1)
-                    if idx != -1:
-                        found_option_key = False # new section, reset option key
-                        current_section = valid_line[1:idx] # .strip()
-                        # print(f"current_section: {current_section}")
-                        if current_section == target_section:
-                            in_target_section = True
-                        else:
-                            in_target_section = False
-                            in_multi_ne_value = False
-                        continue
+                if section_line.startswith('[') and ']' in section_line:
+                    if found_option_key:
+                        break
+                    in_target_section = section_line[1:section_line.index(']')] == target_section
+                    continue
 
                 # not in section, just skip
                 if not in_target_section:
                     continue
+
+                if not valid_line.strip():
+                    continue
+                indent = len(valid_line) - len(valid_line.lstrip())
 
                 if not found_option_key:
                     option_sep_idx = min(
                         valid_line.find(':') if ':' in valid_line else len(valid_line),
                         valid_line.find('=') if '=' in valid_line else len(valid_line)
                     )
-                    option_line = valid_line[:option_sep_idx].rstrip() # cleanup whitespace character in tail, reserve in head
-                    if option_line.startswith(target_option) == False:
+                    option_line = valid_line[:option_sep_idx].strip().lower()
+                    if option_sep_idx == len(valid_line) or option_line != target_option:
                         continue
                     found_option_key = True
+                    option_indent = indent
                     result["option_line"] = line_num
 
                     pos = get_value_position(valid_line, option_sep_idx + 1)
@@ -334,16 +333,14 @@ class ConfigEditor:
                         result["val_end_byte"] = pos["val_end_byte"]
                     continue
 
-                if valid_line.startswith(' '):
-                    pos = get_value_position(valid_line, 0)
-                    if pos is not None:
-                        if result["val_start_line"] == -1:
-                            result["val_start_line"] = line_num
-                        if result["val_start_byte"] == -1:
-                            result["val_start_byte"] = pos["val_start_byte"]
-                        result["val_end_line"] = line_num
-                        result["val_end_byte"] = pos["val_end_byte"]
-                    continue
+                if indent <= option_indent:
+                    break
+                pos = get_value_position(valid_line, 0)
+                if result["val_start_line"] == -1:
+                    result["val_start_line"] = line_num
+                    result["val_start_byte"] = pos["val_start_byte"]
+                result["val_end_line"] = line_num
+                result["val_end_byte"] = pos["val_end_byte"]
             return result
         except FileNotFoundError:
             print(f"Error[{filename}]: cannot open file")

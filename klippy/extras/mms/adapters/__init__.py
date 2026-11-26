@@ -1,6 +1,6 @@
 # Mapping of adapters import
 #
-# Copyright (C) 2025 Garvey Ding <garveyding@gmail.com>
+# Copyright (C) 2026 Garvey Ding <garveyding@gmail.com>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 
@@ -13,6 +13,7 @@ from .gcode import gcode_adapter
 from .heaters import heaters_adapter
 from .idle_timeout import idle_timeout_adapter
 from .manual_stepper import manual_stepper_dispatch
+from .moonraker import moonraker_adapter
 from .motion_queuing import motion_queuing_adapter
 from .motion_report import motion_report_adapter
 from .neopixel import neopixel_dispatch
@@ -35,6 +36,7 @@ __all__ = [
     'heaters_adapter',
     'idle_timeout_adapter',
     'manual_stepper_dispatch',
+    'moonraker_adapter',
     'motion_queuing_adapter',
     'motion_report_adapter',
     'neopixel_dispatch',

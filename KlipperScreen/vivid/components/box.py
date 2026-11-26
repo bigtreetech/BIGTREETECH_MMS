@@ -1,4 +1,4 @@
-from gi.repository import Gtk, Gdk
+from gi.repository import Gdk, Gtk
 
 
 class FixedSizeBox(Gtk.Box):
@@ -186,6 +186,8 @@ class FixedRectangleBox(FixedSizeBox):
         """
         if self.fixed_height == 0 or self.fixed_width == 0:
             return
+        if allocation.height == 0 or allocation.width == 0:
+            return
 
         # Calculate available aspect ratio
         available_ratio = allocation.width / allocation.height
@@ -246,7 +248,7 @@ class CircleBox(Gtk.Box):
         background_color (str): Hex color code for the background
         **kwargs: Additional arguments for Gtk.Box
     """
-    def __init__(self, 
+    def __init__(self,
         diameter: int = 60,
         border_width: int = 4,
         border_color: str = "#000000",
@@ -312,7 +314,7 @@ class CircleBox(Gtk.Box):
     def add_content(self, widget):
         """
         Add a widget to the center of the circular container.
-        
+
         Args:
             widget: Any Gtk.Widget to add to the container
         """

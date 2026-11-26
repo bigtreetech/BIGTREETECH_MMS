@@ -1,7 +1,8 @@
 ### Compatibility
-* Klipper: compatible between [Commits on Nov 27, 2025: stm32: f0 i2c clean nackcf interrupt on handle](https://github.com/Klipper3d/klipper/commit/938300f3c3cc25448c499a3a8ca5b47b7a6d4fa8) and the lastest version [Commits on Apr 16, 2026: polar: add velocity scaling (#7172)](https://github.com/Klipper3d/klipper/commit/373f200ca69adb624675f42e685f61d85d49ba40). The stepper scheduling uses the newly updated `motion_queuing.py` upstream of Klipper, so it is necessary to use the new version of Klipper.
-* KlipperScreen: compatible between [Commits on Sep 12, 2025: refactor: less logging when on battery](https://github.com/KlipperScreen/KlipperScreen/commit/b3115f9b9b329642d4dbf0ad225ab065ea3eda80) and the lastest version [Commits on Apr 5, 2026: Revert "feat: Add an option to add the remaining spool weight to the title-bar (#1662)"](https://github.com/KlipperScreen/KlipperScreen/commit/056831910087a858908f9f5d117ad5c50446e729). In theory, earlier KlipperScreen also supports it, but it has not been actually tested yet.
-* Python: Only supports Klipper for Python 3 environment.
+* Klipper MMS 0.1.0496 requires Klipper [938300f](https://github.com/Klipper3d/klipper/commit/938300f3c3cc25448c499a3a8ca5b47b7a6d4fa8) or newer and a printer configuration with `[pause_resume]`. Offline verification covers that revision and the source tree based on [7558e8c2](https://github.com/Klipper3d/klipper/commit/7558e8c2f6f3f2ca4b5ff1ddd85d2b82f0c3881d).
+* KlipperScreen ViViD 0.2.0042 was checked against [b3115f9b](https://github.com/KlipperScreen/KlipperScreen/commit/b3115f9b9b329642d4dbf0ad225ab065ea3eda80) and [22604c77](https://github.com/KlipperScreen/KlipperScreen/commit/22604c770ce199edd057c095680ec8751184765e).
+* G-code upload processing requires Moonraker with the [file processor API](https://github.com/Arksine/moonraker/commit/b8b28bc). With an older Moonraker, ordinary tool changes and already processed files still work.
+* The installer requires Python 3.
 
 ### Installation
 * Download installation script.
@@ -29,7 +30,7 @@
 
     * `-d`: uninstall
 
-    * `-u`: update klipper and KlipperScreen. all parameters in the configuration files will be automatically copied from the old configuration without user interaction.
+    * `-u`: Update ViViD for Klipper, Moonraker, and any previously installed ViViD KlipperScreen. The installer backs up the old Klipper configuration, migrates supported machine settings and slot calibration, and installs the current bundled macros. Existing Moonraker settings are preserved.
 
     * `-z`: skip github update check. The script will automatically check the version on GitHub by default and ensure that it runs with the latest version. If you have modified some logic of script locally, please disable updates at runtime through the `-z` parameter. For example:
 
@@ -40,6 +41,10 @@
     * `-g`: get version
 
     * no flags for default `-i` install
+
+The installer manages linked copies of the ViViD modules. For a Klipper or KlipperScreen source checkout that already includes ViViD, use that checkout's update process.
+
+The installer follows configuration includes. Use a dedicated Klipper include for the ViViD entry point so the installer can remove it during uninstall without removing other configuration files.
 
 ### Flash
 Both ViViD and Buffer MCU have built-in [Katapult (formerly known as CanBoot)](https://github.com/Arksine/katapult) for updating Klipper firmware.
@@ -54,10 +59,10 @@ for example:
 * `flash.sh -f ~/klipper/out/klipper.bin`
 
 ### Config
-Please refor to [mms_config](./docs/en/mms_config.md) for details.
+See the MMS configuration guides in [English](./docs/en/mms_config.md) and [Chinese](./docs/zh/mms_config.md). The [pause recovery and cutter protection examples](./docs/en/mms_config.md#pause-recovery-and-cutter-protection) show how to integrate these features with the printer’s existing macros.
 
 ### ChangeLog
-Please refor to [mms_changelog](./docs/en/mms_changelog.md) for details.
+See the release notes in [English](./docs/en/Changelog.md) and [Chinese](./docs/zh/Changelog.md).
 
 ### 🐇 Acknowledgements
 The script implementation referenced the logic and some source code from the excellent project [Happy-Hare](https://github.com/moggieuk/Happy-Hare) and [AFC](https://github.com/ArmoredTurtle/AFC-Klipper-Add-On).

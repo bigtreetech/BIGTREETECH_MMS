@@ -4,11 +4,11 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 
-import binascii, hashlib, json, logging, os, re, time
+import binascii, hashlib, json, logging, re, time
 from collections import OrderedDict
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Dict, Any, Type
+from typing import Dict, Any
 
 from ...bus import MCU_SPI_from_config
 

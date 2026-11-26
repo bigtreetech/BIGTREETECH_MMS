@@ -53,6 +53,8 @@ if __name__ == "__main__":
         if old_filename != "":
             old_mms = ConfigEditor(old_filename)
             for section in old_mms.fileconfig.sections():
+                if section.startswith("gcode_macro "):
+                    continue
                 for option in old_mms.fileconfig.options(section):
                     config_val = config_json.get(section, {}).get(option, None)
                     # option in config, so skip copy from old files
@@ -60,12 +62,15 @@ if __name__ == "__main__":
                         continue
                     try:
                         new_mms.fileconfig.get(section, option)
-                    except NoOptionError as e:
-                        filename = new_mms.get_filename(section, None)
+                    except NoOptionError:
+                        filename = new_mms.get_filename(section)
+                        if filename is None:
+                            continue
                         pos = new_mms.get_option_val_position(filename, section, option, True)
-                        result = config_option_enable(filename, pos["option_line"], True)
-                        if result == False:
-                            print(f"section:{section}, option:{option}, uncomment[True] failed")
+                        if pos["option_line"] >= 0 and not config_option_enable(
+                            filename, pos["option_line"], True
+                        ):
+                            raise RuntimeError(f"Could not enable [{section}] {option}")
 
         for section, option_dict in config_json.items():
             for option, value in option_dict.items():
@@ -79,9 +84,8 @@ if __name__ == "__main__":
                 if value != new_true:
                     filename = new_mms.get_filename(section, None)
                     pos = new_mms.get_option_val_position(filename, section, option, True)
-                    result = config_option_enable(filename, pos["option_line"], value)
-                    if result == False:
-                        print(f"section:{section}, option:{option}, uncomment[{value}] failed")
+                    if not config_option_enable(filename, pos["option_line"], value):
+                        raise RuntimeError(f"Could not set [{section}] {option}")
 
     except Exception as e:
-        print(f"Error[config_uncomment]: {e}") # print(f"{type(e).__name__})
+        sys.exit(f"Error[config_uncomment]: {e}")

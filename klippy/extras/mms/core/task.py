@@ -4,8 +4,9 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 
-import time
 from dataclasses import dataclass
+
+import greenlet
 
 from ..adapters import printer_adapter
 
@@ -41,10 +42,13 @@ class AsyncTask:
         self.params = None
         # An optional callback function to be called with the result of func
         self.callback = None
-        # The completion event for the async task
-        self.completion = self.reactor.completion()
+        self.stop_when = None
+        # Each accepted start owns a fresh completion until its callback exits.
+        self.completion = None
 
         self.running = False
+        self._cancel_requested = False
+        self._execution_greenlet = None
         self.mms_logger = None
 
     def _initialize_loggers(self):
@@ -55,7 +59,7 @@ class AsyncTask:
             self.log_warning = self.mms_logger.create_log_warning()
             self.log_error = self.mms_logger.create_log_error()
 
-    def setup(self, func, params=None, callback=None):
+    def setup(self, func, params=None, callback=None, stop_when=None):
         """
         Sets up the asynchronous task with the given function and parameters.
         Returns True if the setup was successful, False if a task is
@@ -63,7 +67,7 @@ class AsyncTask:
         """
         self._initialize_loggers()
 
-        if self.func and self.running:
+        if self.running:
             self.log_warning(
                 f"async task func:{self.func} exists and running, skip...")
             return False
@@ -71,46 +75,60 @@ class AsyncTask:
         self.func = func
         self.params = params
         self.callback = callback
+        self.stop_when = stop_when
         return True
 
-    def _complete(self, result):
+    def _complete(self, completion, result):
         """
         Completes the asynchronous task by signaling the reactor and
         resetting the task state.
         """
-        self.reactor.async_complete(self.completion, result)
+        if completion is not self.completion or not self.running:
+            return
         self.func = None
         self.params = None
         self.callback = None
+        self.stop_when = None
 
-        # Update running to stop the task
         self.running = False
-        # self.log_info(
-        #     f"async task complete func:{self.func}"
-        #     f" at {self.reactor.monotonic()}")
+        self._cancel_requested = False
+        self._execution_greenlet = None
+        self.reactor.async_complete(completion, result)
 
-    def _execute(self, eventtime):
+    def _execute(self, eventtime, completion):
         """
         Executes the asynchronous task.
         eventtime (float): The time at which the event is executed.
         """
-        # self.log_info(f"async task executed func:{self.func} at {eventtime}")
+        # A delayed callback may belong to a previously completed start.
+        if completion is not self.completion or not self.running:
+            return
+        if self._cancel_requested:
+            self._complete(completion, -1)
+            return -1
+
+        func, params, callback = self.func, self.params, self.callback
+        self._execution_greenlet = greenlet.getcurrent()
         result = None
         try:
-            result = self.func(**self.params) \
-                if self.params is not None \
-                else self.func()
+            result = func(**params) if params is not None else func()
         except Exception as e:
             self.log_error(f"async task error:{e}")
+            result = False
 
-        # No matter func task is success or not, call callback
-        if self.callback:
+        # A running function cannot be forcibly unwound. Keep ownership until
+        # it exits, and skip a callback that has not begun when stop is asked.
+        if callback and not self._cancel_requested:
             try:
-                self.callback(result)
+                callback(result)
             except Exception as e:
                 self.log_error(f"async task callback error:{e}")
+                result = False
 
-        self._complete(result or 1)
+        # Completion means the function ended, not that its result is true.
+        if self._cancel_requested:
+            result = -1
+        self._complete(completion, result)
         return result
 
     def start(self):
@@ -122,22 +140,36 @@ class AsyncTask:
             self.log_warning("async task func is running, return")
             return False
 
+        completion = self.reactor.completion()
+        self.completion = completion
+        self._cancel_requested = False
         self.running = True
-        self.reactor.register_async_callback(self._execute)
-        return self.completion
+        try:
+            self.reactor.register_async_callback(
+                lambda eventtime: self._execute(eventtime, completion))
+        except Exception:
+            self._complete(completion, False)
+            raise
+        return completion
 
     def stop(self):
-        if not self.func:
-            self.log_warning("async task func not exists, return")
-            return False
+        """Request cancellation; completion signals actual callback exit.
 
+        The operation's owner must stop its physical actions cooperatively.
+        Setup/start stay unavailable until the old execution has unwound.
+        """
         if not self.running:
-            self.log_warning("async taskfunc is not running, return")
             return False
 
-        self._complete(-1)
-        self.running = False
+        self._cancel_requested = True
         return True
+
+    def current_is_cancelled(self):
+        # Other reactor callbacks can run while this task is waiting. Its
+        # cancellation must not leak into those unrelated callers.
+        return (self._execution_greenlet is greenlet.getcurrent()
+                and (self._cancel_requested
+                     or self.stop_when is not None and self.stop_when()))
 
     def is_running(self):
         return self.running
@@ -208,6 +240,9 @@ class PeriodicTask:
         self.timer = None
         # A boolean indicating whether the task is currently running
         self.running = False
+        # Stopping a timer does not unwind an entered callback. Keep its
+        # ownership until it returns, including any reactor waits in it.
+        self._execution_greenlet = None
 
         task_config = TaskConfig()
         # The interval in seconds between executions of the function
@@ -228,11 +263,11 @@ class PeriodicTask:
             self.log_error = self.mms_logger.create_log_error()
 
     def set_period(self, period):
-        if not self.running:
+        if not self.is_running():
             self.period = period
 
     def set_timeout(self, timeout):
-        if not self.running:
+        if not self.is_running():
             self.timeout = timeout
 
     def schedule(
@@ -265,7 +300,7 @@ class PeriodicTask:
         """
         self._initialize_loggers()
 
-        if self.func or self.timer:
+        if self.func or self.timer or self._execution_greenlet is not None:
             self.log_warning(
                 f"periodic task func:{self.func} exists and running, skip...")
             return False
@@ -303,54 +338,45 @@ class PeriodicTask:
             float: The next wake time for the timer, or reactor.NEVER
             if the timer no longer exists.
         """
-        if self.func is None or self.timer is None:
+        if self.func is None or self.timer is None or not self.running:
             self.log_warning(f"periodic task func or timer not exists, exit")
             return self.reactor.NEVER
 
+        self._execution_greenlet = greenlet.getcurrent()
         try:
-            result = self.func(**self.params) \
-                if self.params is not None \
-                else self.func()
-            # self.log_info(
-            #     f"periodic task executed func:{self.func} at {eventtime}")
-
-            if self.callback:
-                self.callback(result)
-
-        except Exception as e:
-            self.log_error(f"periodic task error:{e}, exit")
-            self.stop()
-            return self.reactor.NEVER
-
-        # Check timer again after func is executed
-        if self.timer is None:
-            self.log_info(f"periodic task timer not exists, exit")
-            return self.reactor.NEVER
-
-        if self.timeout is not None and self.start_at is not None:
-            if time.time() - self.start_at > self.timeout:
-                self.log_info(f"periodic task execution timeout, exit")
-                if self.timeout_callback:
-                    self.timeout_callback()
+            try:
+                result = self.func(**self.params) \
+                    if self.params is not None else self.func()
+                if self.callback:
+                    self.callback(result)
+            except Exception as e:
+                self.log_error(f"periodic task error:{e}, exit")
                 self.stop()
                 return self.reactor.NEVER
 
-        # Re-register the timer for the next execution
-        waketime = self.get_next_waketime()
-        # self.log_info(f"periodic task next waketime: {waketime}")
-        # self.reactor.update_timer(self.timer, waketime)
-        return waketime
+            if self.timer is None:
+                return self.reactor.NEVER
+            if self.timeout is not None and self.start_at is not None:
+                if self.reactor.monotonic() - self.start_at > self.timeout:
+                    self.log_info(f"periodic task execution timeout, exit")
+                    if self.timeout_callback:
+                        self.timeout_callback()
+                    self.stop()
+                    return self.reactor.NEVER
+            return self.get_next_waketime()
+        finally:
+            self._execution_greenlet = None
 
     def start(self):
         if not self.func:
             self.log_warning("periodic task func not exists, return")
             return False
-        if self.running:
+        if self.is_running():
             self.log_warning(f"periodic task is running, return")
             return False
 
         self.running = True
-        self.start_at = time.time()
+        self.start_at = self.reactor.monotonic()
         self.timer = self.reactor.register_timer(
             callback = self._execute,
             waketime = self.get_next_waketime()
@@ -358,13 +384,23 @@ class PeriodicTask:
         return True
 
     def stop(self):
-        if not self.running:
+        if not self.running and self.func is None and self.timer is None:
             return False
-        self.running = False
-
         self._teardown()
+        self.running = False
         self.start_at = None
         return True
 
     def is_running(self):
-        return self.running
+        return self.running or self._execution_greenlet is not None
+
+    def wait_stopped(self, deadline):
+        """Join an entered callback after stop(); never wait for ourselves."""
+        if self._execution_greenlet is greenlet.getcurrent():
+            return False
+        while self._execution_greenlet is not None:
+            now = self.reactor.monotonic()
+            if now >= deadline:
+                return False
+            self.reactor.pause(min(deadline, now + 0.05))
+        return not self.running

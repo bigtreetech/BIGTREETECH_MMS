@@ -6,18 +6,14 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 #
 from __future__ import annotations
+import asyncio
 import json
-import logging, os, sys, re, time, asyncio
-import runpy, argparse, shutil, traceback, tempfile, filecmp
-from typing import (
-    TYPE_CHECKING,
-    List,
-    Dict,
-    Any,
-    Optional,
-    Union,
-    cast
-)
+import logging
+import re
+import shlex
+import sys
+from pathlib import Path
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .spoolman import SpoolManager, DB_NAMESPACE, ACTIVE_SPOOL_KEY
@@ -58,6 +54,9 @@ class MmsServer:
 
         self.nb_gates = None             # Set during initialization to the size of the MMS or 1 if standalone
         self.cache_lock = asyncio.Lock() # Lock to serialize a async calls
+        self.spoolman_has_extras = False
+        self.spoolman_init_task = None
+        self.lane_data_lock = asyncio.Lock()
 
         # Spoolman filament info retrieval functionality and update reporting
         if self.spoolman:
@@ -74,9 +73,8 @@ class MmsServer:
         # Moonraker lane data push for slicer integration
         self.server.register_remote_method("moonraker_push_lane_data", self.push_lane_data)
         self.server.register_remote_method("moonraker_pull_lane_data", self.pull_lane_data)
-        self.server.register_remote_method("moonraker_cleanup_lane_data", self.cleanup_lane_data)
+        self.server.register_event_handler("server:klippy_ready", self._sync_lane_data)
 
-        # Replace file_manager/metadata with this file
         self.setup_placeholder_processor(config)
 
         # Options
@@ -102,9 +100,8 @@ class MmsServer:
 
         # Get current printer hostname
         self.printer_hostname = self.printer_info["hostname"]
-        self.spoolman_has_extras = False
         if self.spoolman:
-            asyncio.create_task(self._init_spoolman(retry=3)) # Spoolman may start up after us so retry a few times
+            self.spoolman_init_task = asyncio.create_task(self._init_spoolman(retry=3))
         else:
             logging.info("MMS server: Skipping Spoolman init as component not found")
 
@@ -161,16 +158,10 @@ class MmsServer:
             logging.error(msg)
         else:
             logging.info(msg)
-        if not silent:
-            if self._mms_backend_enabled():
-                error_flag = "ERROR=1" if error else ""
-                msg = msg.replace("\n", "\\n") # Get through klipper filtering
-                await self.klippy_apis.run_gcode(f"MMS_LOG MSG='{msg}' {error_flag}")
-            else:
-                for msg in msg.split("\n"):
-                    await self.klippy_apis.run_gcode(f"M118 {msg}")
-                if error :
-                    await self.klippy_apis.pause_print()
+        if not silent and self._mms_backend_enabled():
+            error_flag = " ERROR=1" if error else ""
+            msg = shlex.quote(msg.replace("\r", "").replace("\n", "\\n"))
+            await self.klippy_apis.run_gcode(f"MMS_LOG MSG={msg}{error_flag}")
 
     async def _init_mms_backend(self):
         '''
@@ -663,120 +654,130 @@ class MmsServer:
                 msg = f"No gates assigned for printer: {printer_name}"
             await self._log_n_send(msg)
 
-    async def push_lane_data(self, lane_data):
-        '''
-        Pushes lane data to Moonraker database for slicer integration (OrcaSlicer)
-        lane_data: dictionary of lane data objects mapped to 'lane{n}' keys
-        '''
+    async def _sync_lane_data(self):
+        # Moonraker emits this after registering remote methods with Klippy.
+        if "mms" not in await self.klippy_apis.get_object_list(default=[]):
+            return
         try:
-            if lane_data:
-                await self.database.insert_batch("lane_data", lane_data)
-                logging.info("MMS Lane Data successfully pushed to Moonraker")
-        except Exception as e:
-            logging.error(f"Error pushing lane data: {e}")
+            await self.klippy_apis._send_klippy_request(
+                "mms/endpoint/moonraker_ready", {})
+        except self.server.error as exc:
+            # A non-ViViD MMS or older Klippy may not provide the endpoint.
+            logging.warning("MMS lane data sync unavailable: %s", exc)
 
-    async def pull_lane_data(self):
-        '''
-        Pulls lane data from Moonraker database and pushes it to Klipper via G-code
-        '''
+    async def push_lane_data(self, lane_data, write_id=None):
+        """Store complete records produced by the MMS slot metadata owner."""
+        response = {"write_id": write_id}
+        if not isinstance(lane_data, dict) or any(
+            not isinstance(key, str)
+            or not re.fullmatch(r"lane(?:0|[1-9][0-9]*)", key)
+            or not isinstance(value, dict)
+            for key, value in lane_data.items()
+        ):
+            logging.warning("MMS server: invalid lane_data update")
+            response["error"] = "Invalid Moonraker lane_data update"
+        elif lane_data:
+            try:
+                async with self.lane_data_lock:
+                    await self.database.insert_batch("lane_data", lane_data)
+            except Exception:
+                logging.exception("MMS server: failed to persist lane_data")
+                response["error"] = "Cannot persist Moonraker lane_data"
+
+        if write_id is not None:
+            await self._send_lane_response("lane_data_written", response)
+
+    async def pull_lane_data(self, request_id, slot_nums):
+        """Restore a single snapshot without a reset or a write back."""
+        if not isinstance(slot_nums, list) or any(
+            type(slot_num) is not int or slot_num < 0 for slot_num in slot_nums
+        ):
+            logging.warning("MMS server: invalid slot list for lane_data pull")
+            return
+
+        response = {"request_id": request_id, "lane_data": {}}
         try:
-            db = self.server.lookup_component("database", None)
-            if db is None:
-                return {"error": "database component not found"}
-                
-            lane_items = await db.get_item("lane_data", None, {})
-            
-            if not lane_items and self.spoolman_has_extras:
-                logging.info("MMS server: empty database, trying Spoolman fallback")
-                await self._initialize_mms()
-                lane_items = {}
-                for gate in range(self.nb_gates):
-                    spool_id = self._find_first_spool_id(self.printer_hostname, gate)
-                    if spool_id > 0:
-                        spool_info = self.spool_location.get(spool_id)
-                        if spool_info:
-                            attr = spool_info[2]
-                            lane_items[f"lane{gate}"] = {
-                                "vendor_name": attr.get('vendor'),
-                                "name": attr.get('name'),
-                                "material": attr.get('material'),
-                                "color": attr.get('color'),
-                                "bed_temp": attr.get('bed_temp'),
-                                "nozzle_temp": attr.get('temp'),
-                                "lane": str(gate),
-                            }
+            if slot_nums:
+                keys = [f"lane{slot_num}" for slot_num in slot_nums]
+                async with self.lane_data_lock:
+                    stored = await self.database.get_batch("lane_data", keys)
+                if not stored and self.spoolman_init_task is not None:
+                    # Optional first-use fallback: wait for initial Spoolman
+                    # discovery without holding the database lock.
+                    await asyncio.shield(self.spoolman_init_task)
+                    async with self.lane_data_lock:
+                        stored = await self.database.get_batch("lane_data", keys)
+                if not isinstance(stored, dict):
+                    raise ValueError("lane_data is not a mapping")
+                if not stored and self.spoolman_has_extras:
+                    stored = self._get_spoolman_lanes(slot_nums)
+                response["lane_data"] = stored
+        except Exception:
+            logging.exception("MMS server: failed to read lane_data")
+            response["error"] = "Cannot read Moonraker lane_data"
 
-            # Always reset all slots in Klipper first to ensure empty states are synced
-            await self._initialize_mms()
-            if self.nb_gates:
-                logging.info(f"MMS server: resetting {self.nb_gates} slots in Klipper")
-                reset_cmd = f"MMS_SLOT_MAP GATES={','.join(map(str, range(self.nb_gates)))} RESET=1 QUIET=1"
-                await self.klippy_apis.run_gcode(reset_cmd)
+        await self._send_lane_response("restore_lane_data", response)
 
-            if lane_items:
-                logging.info(f"MMS server: pushing {len(lane_items)} lanes to Klipper")
-                for lane_key, data in lane_items.items():
-                    if not isinstance(data, dict): continue
-                    slot = data.get('lane')
-                    if slot is None: continue
-                    
-                    # Construct MMS_SLOT_MAP command
-                    parts = [f"MMS_SLOT_MAP SLOT={slot} QUIET=1"]
-                    if data.get('material'): parts.append(f"MATERIAL='{data['material']}'")
-                    if data.get('color'): parts.append(f"COLOR='{data['color']}'")
-                    if data.get('vendor_name'): parts.append(f"VENDOR='{data['vendor_name']}'")
-                    if data.get('name'): parts.append(f"NAME='{data['name']}'")
-                    
-                    # Handle temps (avoid 0.0 or None)
-                    bt = data.get('bed_temp')
-                    if bt and float(bt) > 0: parts.append(f"BED_TEMP={bt}")
-                    nt = data.get('nozzle_temp')
-                    if nt and float(nt) > 0: parts.append(f"NOZZLE_TEMP={nt}")
-                    
-                    cmd = " ".join(parts)
-                    await self.klippy_apis.run_gcode(cmd)
-
-            return lane_items or {}
-        except Exception as e:
-            logging.error(f"MMS server: Error in pull_lane_data: {e}")
-            return {"error": str(e)}
-
-    async def cleanup_lane_data(self, num_gates):
-        '''
-        Removes lane data for gates that no longer exist
-        '''
+    async def _send_lane_response(self, endpoint, response):
+        # Never hold the database lock across a request to Klippy.
         try:
-            lane_items = await self.database.get_item("lane_data", None, {})
-            keys_to_delete = []
-            for lane_key, lane_value in lane_items.items():
-                if isinstance(lane_value, dict):
-                    lane_str = lane_value.get('lane', '')
-                    try:
-                        lane_num = int(lane_str)
-                        if lane_num >= num_gates:
-                            keys_to_delete.append(lane_key)
-                    except (ValueError, TypeError):
-                        continue
+            await self.klippy_apis._send_klippy_request(
+                f"mms/endpoint/{endpoint}", response)
+        except self.server.error as exc:
+            logging.warning("MMS lane data %s unavailable: %s", endpoint, exc)
 
-            if keys_to_delete:
-                await self.database.delete_batch("lane_data", keys_to_delete)
-                logging.info(f"Removed old lane data: {keys_to_delete}")
-
-        except Exception as e:
-            logging.error(f"Error cleaning up lane data: {e}")
+    def _get_spoolman_lanes(self, slot_nums):
+        # Existing optional fallback for first use, when lane_data has no records.
+        lanes = {}
+        for slot_num in slot_nums:
+            spool_id = self._find_first_spool_id(self.printer_hostname, slot_num)
+            if spool_id <= 0:
+                continue
+            _, _, attr = self.spool_location[spool_id]
+            lanes[f"lane{slot_num}"] = {
+                "vendor_name": attr.get("vendor"),
+                "name": attr.get("name"),
+                "material": attr.get("material"),
+                "color": attr.get("color"),
+                "bed_temp": attr.get("bed_temp"),
+                "nozzle_temp": attr.get("temp"),
+                "filament_id": attr.get("filament_id"),
+                "spool_id": spool_id,
+                "lane": str(slot_num),
+            }
+        return lanes
 
     def setup_placeholder_processor(self, config):
-        args = " -m" if config.getboolean("enable_file_preprocessor", True) else ""
-        args += " -n" if config.getboolean("enable_toolchange_next_pos", True) else ""
-        
-        # Link the custom MMS preprocessor script to Moonraker's file_manager
-        script_path = os.path.join(os.path.dirname(__file__), '../../scripts/mms_preprocessor.py')
-        if os.path.exists(script_path):
-             from moonraker.components.file_manager import file_manager
-             file_manager.METADATA_SCRIPT = os.path.abspath(script_path) + args
-             logging.info(f"MMS Preprocessor script linked: {file_manager.METADATA_SCRIPT}")
-        else:
-             logging.warning(f"MMS Preprocessor script not found at {script_path}")
+        placeholders = config.getboolean("enable_file_preprocessor", True)
+        next_pos = config.getboolean("enable_toolchange_next_pos", True)
+        if not placeholders and not next_pos:
+            return
+
+        script = Path(__file__).resolve().parents[2] / "scripts" / "mms_preprocessor.py"
+        if not script.is_file():
+            self.server.add_warning(f"MMS preprocessor not found: {script}")
+            return
+        file_manager = self.server.lookup_component("file_manager")
+        register = getattr(file_manager.get_metadata_storage(),
+                           "register_gcode_processor", None)
+        if register is None:
+            self.server.add_warning(
+                "This Moonraker version does not support G-code processors; "
+                "update Moonraker to enable ViViD file preprocessing.")
+            return
+
+        command = [sys.executable, str(script), "-f", "{gcode_file_path}"]
+        if placeholders:
+            command.append("-m")
+        if next_pos:
+            command.append("-n")
+        register("mms_preprocessor", {
+            "name": "mms_preprocessor",
+            "command": command,
+            "timeout": 120.,
+            "ident": {"regex": r"^; processed by MMS\s*$", "location": "header"},
+        })
+
 
 def load_component(config):
     return MmsServer(config)

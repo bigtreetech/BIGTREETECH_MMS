@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 
 import gi
+
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gdk, Gtk, Pango
 
@@ -34,15 +35,10 @@ class VividLabel(Gtk.Label):
         halign=Gtk.Align.CENTER,
         valign=Gtk.Align.CENTER
     ):
-        super().__init__()
+        super().__init__(label=content)
         self._content = content
         self._size = size
         self._bold = bold
-
-        if "<b>" in content or "</b>" in content:
-            self.set_markup(content)
-        else:
-            self.set_label(content)
 
         self.config = LabelConfig()
         self._color = color or self.config.default_color
@@ -77,12 +73,12 @@ class VividLabel(Gtk.Label):
         if self._content == new_content:
             return
         self._content = new_content
-        if "<b>" in new_content or "</b>" in new_content:
-            self.set_markup(new_content)
-        else:
-            self.set_text(new_content)
+        self.set_text(new_content)
         # Queue UI refresh to ensure proper rendering
         self.queue_draw()
+
+    def get_content(self):
+        return self._content
 
     def set_size(self, new_size):
         """Update font size"""

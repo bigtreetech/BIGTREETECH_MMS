@@ -84,5 +84,18 @@ class SwapFailedSignal(Exception):
     """Raised when swap operation fails."""
 
 
+class SwapRunoutSignal(Exception):
+    """Transfer a known exhausted physical path to the swap owner."""
+    def __init__(self, slot_num):
+        self.slot_num = slot_num
+        super().__init__(
+            f"slot[{slot_num}] exhausted; clear residual before fallback"
+        )
+
+
+class ChargeFeedRetrySignal(Exception):
+    """Loading has not retained Entry; the request owner may retry feed."""
+
+
 class DeliveryTerminateSignal(Exception):
     """Terminate signal."""

@@ -4,7 +4,7 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, fields
 
 from ..adapters import (
@@ -12,6 +12,7 @@ from ..adapters import (
     gcode_adapter,
     printer_adapter,
     toolhead_adapter,
+    virtual_sdcard_adapter,
 )
 from ..core.config import (
     OptionalField,
@@ -19,9 +20,8 @@ from ..core.config import (
     PointType,
     PrinterConfig
 )
-from ..core.exceptions import PurgeFailedError
+from ..core.exceptions import MMSException, PurgeFailedError
 from ..core.logger import log_time_cost
-from ..core.task import AsyncTask
 
 
 @dataclass(frozen=True)
@@ -46,6 +46,25 @@ class PrinterPurgeConfig(PrinterConfig):
     # Unit: mm/min
     purge_speed: float = 300.0
 
+    # Runout E-travel limits (mm). Independent of Bowden length to allow slip.
+    runout_max_distance: float = 5000.0
+    # Distance-based fallback for machines without Entry.
+    runout_distance: float = 2000.0
+    # Optional mechanical cleaning before a fresh extrusion sequence.
+    # No E moves; must finish at tray_point. Disabled by default.
+    pre_extrude_gcode: OptionalField = ""
+    # Optional mechanical cleaning/ejection after each runout segment.
+    runout_chunk_gcode: OptionalField = ""
+
+    # Ordinary pause/recovery (mm, mm/min). Zero distance disables the
+    # respective extrusion; existing swap purges use their own parameters.
+    pause_retract_distance: float = 0.0
+    pause_retract_speed: float = 1800.0
+    resume_purge_distance: float = 0.0
+    # Extra filament after XY return on ordinary RESUME, before lowering Z.
+    # Independent of retraction debt; uses repay_speed. Unit: mm.
+    resume_extra_extrude_distance: float = 0.0
+
     # Length of orphan filament to be purged
     #     | | Extruder | |
     #     | | Stepper  | |
@@ -68,6 +87,9 @@ class PrinterPurgeConfig(PrinterConfig):
     # Retraction speed
     # Unit: mm/min
     retract_speed: float = 10000.0
+    # Speed when repaying purge retraction; defaults to retract_speed.
+    # Unit: mm/min
+    repay_speed: float = retract_speed
 
     # # Priming distance
     # # Unit: mm
@@ -102,6 +124,27 @@ class PrinterPurgeConfig(PrinterConfig):
     custom_before: OptionalField = "MMS_PURGE_CUSTOM_BEFORE"
     custom_after: OptionalField = "MMS_PURGE_CUSTOM_AFTER"
 
+    def get_type_handlers(self):
+        handlers = super().get_type_handlers()
+        def get_float(config, name):
+            if name == "repay_speed":
+                retract_speed = config.getfloat("retract_speed", above=0.)
+                return config.getfloat(name, retract_speed, above=0.)
+            if name in ("runout_max_distance", "runout_distance",
+                        "pause_retract_speed"):
+                return config.getfloat(
+                    name, getattr(type(self), name), above=0.0
+                )
+            if name in ("pause_retract_distance", "resume_purge_distance",
+                        "resume_extra_extrude_distance"):
+                return config.getfloat(
+                    name, getattr(type(self), name), minval=0.0
+                )
+            return config.getfloat(name)
+
+        handlers[float] = get_float
+        return handlers
+
 
 class MMSPurge:
     def __init__(self, config):
@@ -116,6 +159,8 @@ class MMSPurge:
 
         # State tracking
         self._is_running = False
+        # Accepted E displacement still owed after the last purge, in mm.
+        self._retraction_debt = 0.0
 
         printer_adapter.register_klippy_ready(
             self._handle_klippy_ready)
@@ -129,11 +174,13 @@ class MMSPurge:
     def _initialize_mms(self):
         self.mms = printer_adapter.get_mms()
         self.mms_delivery = printer_adapter.get_mms_delivery()
+        self.mms_fil_detection = self.mms.get_mms_filament_detection()
 
     def _initialize_gcode(self):
         commands = [
             ("MMS_PURGE", self.cmd_MMS_PURGE),
-            ("MMS_PURGE_TEST", self.cmd_MMS_PURGE_TEST),
+            ("MMS_REPAY_RETRACT", self.cmd_MMS_REPAY_RETRACT),
+            ("MMS_CLEAR_RETRACT", self.cmd_MMS_CLEAR_RETRACT),
 
             ("MMS_TRAY", self.cmd_MMS_TRAY),
             ("MMS_TRAY_EJECT", self.cmd_MMS_TRAY_EJECT),
@@ -159,7 +206,7 @@ class MMSPurge:
     def _purge_is_running(self):
         self._is_running = True
         try:
-            yield
+            yield self.mms.get_mms_resume().get_status()["generation"]
         finally:
             self._is_running = False
 
@@ -169,31 +216,159 @@ class MMSPurge:
     def get_purge_distance(self):
         return self.orphan_filament_length * self.purge_modifier
 
-    # ---- MMS Buffer control ----
-    def _pause_mms_buffer(self, slot_num):
-        mms_slot = self.mms.get_mms_slot(slot_num)
-        mms_buffer = mms_slot.get_mms_buffer()
-        # Deactivate buffer monitor before
-        mms_buffer.deactivate_monitor()
+    def get_status(self, eventtime=None):
+        return {
+            "tray_point_x": self.tray_point[0],
+            "tray_point_y": self.tray_point[1],
+            "retraction_debt": self._retraction_debt,
+        }
 
-        # Make sure all mms steppers are idle
-        # Timeout with default config in mms_delivery
-        is_idle = self.mms_delivery.wait_mms_selector_and_drive(slot_num)
-        if not is_idle:
-            raise PurgeFailedError(
-                f"slot[{slot_num}] wait selector or drive stepper idle timeout",
-                mms_slot
-            )
-        return mms_buffer
+    def clear_retract(self):
+        """Abandon compensation after unloading, replacement or cancellation."""
+        self._retraction_debt = 0.0
 
-    def _prepare_mms_buffer(self, slot_num):
-        mms_buffer = self._pause_mms_buffer(slot_num)
-        # Setup volume of buffer
-        if not mms_buffer.halfway(slot_num):
-            raise PurgeFailedError(
-                f"slot[{slot_num}] halfway buffer failed during purge",
-                self.mms.get_mms_slot(slot_num)
-            )
+    def _check_generation(self, generation):
+        if generation != self.mms.get_mms_resume().get_status()["generation"]:
+            raise PurgeFailedError("MMS purge retraction was cancelled")
+
+    def _set_retraction_debt(self, distance, generation):
+        # G1 may yield internally. A cancelled call must not revive its debt.
+        self._check_generation(generation)
+        self._retraction_debt = distance
+
+    def _retract(self, distance, generation, speed=None, slot_num=None,
+                 work=None):
+        self._check_generation(generation)
+        if work is not None:
+            distance = work.setdefault("retract_remaining", distance)
+        if distance <= 0.:
+            return
+
+        def accepted(amount):
+            self._set_retraction_debt(self._retraction_debt - amount,
+                                      generation)
+            if work is not None:
+                work["retract_remaining"] = max(
+                    0., work["retract_remaining"] + amount)
+
+        options = dict(
+            check=lambda: self._check_generation(generation),
+            on_segment_accepted=accepted)
+        speed = self.retract_speed if speed is None else speed
+        if slot_num is None:
+            extruder_adapter.move_filament(-distance, speed, **options)
+        else:
+            self.mms_delivery.move_with_buffer(
+                slot_num, -distance, speed, **options)
+        self._check_generation(generation)
+
+    def _motion_slot(self):
+        resume = self.mms.get_mms_resume()
+        slot_num = resume.get_exhausted_slot()
+        if slot_num is None or not resume.is_tail_available(slot_num):
+            slot_num = self.mms.get_current_slot()
+        if slot_num is None:
+            raise PurgeFailedError("filament motion has no known source")
+        return slot_num
+
+    def repay_retract(self, free_tail=False, *, extra_distance=0.,
+                      on_extra_remaining=None):
+        distance = self._retraction_debt + extra_distance
+        if distance <= 0.:
+            return
+        generation = self.mms.get_mms_resume().get_status()["generation"]
+        remaining = distance
+
+        def accepted(amount):
+            nonlocal remaining
+            self._set_retraction_debt(max(0., self._retraction_debt - amount),
+                                      generation)
+            if on_extra_remaining is not None:
+                # The retract is repaid first. The extra occupies the last
+                # part of this same E move, including on partial acceptance.
+                remaining = max(0., remaining - amount)
+                on_extra_remaining(min(extra_distance, remaining))
+
+        options = dict(
+            check=lambda: self._check_generation(generation),
+            on_segment_accepted=accepted)
+        if free_tail:
+            extruder_adapter.move_filament(distance, self.repay_speed,
+                                           **options)
+        else:
+            slot_num = self._motion_slot()
+            self.mms.get_mms_slot(slot_num).get_mms_buffer().check_feed(
+                slot_num)
+            self._check_generation(generation)
+            self.mms_delivery.move_with_buffer(
+                slot_num, distance, self.repay_speed, **options)
+        self._check_generation(generation)
+
+    def retract_for_pause(self, work=None):
+        generation = self.mms.get_mms_resume().get_status()["generation"]
+        slot_num = self._motion_slot()
+        slot = self.mms.get_mms_slot(slot_num)
+        slot.get_mms_buffer().check_feed(slot_num)
+        self._check_generation(generation)
+        self._retract(self.pause_retract_distance, generation,
+                      speed=self.pause_retract_speed, slot_num=slot_num,
+                      work=work)
+
+    def prepare_extrusion(self):
+        """Remove hanging waste without changing the caller's E/debt state."""
+        if not self.pre_extrude_gcode:
+            return
+        generation = self.mms.get_mms_resume().get_status()["generation"]
+        toolhead_adapter.check_motion()
+        gcode_adapter.run_command(self.pre_extrude_gcode, strict=True)
+        self._check_generation(generation)
+        toolhead_adapter.check_motion()
+
+    def purge_for_resume(self, prepare=True, work=None):
+        """Short ordinary/reload purge; the caller owns parking and checks."""
+        if work is None:
+            work = {}
+        slot_num = self._motion_slot()
+        generation = self.mms.get_mms_resume().get_status()["generation"]
+        self._check_generation(generation)
+        self.mms.get_mms_slot(slot_num).get_mms_buffer().prepare_feed(slot_num)
+        self._check_generation(generation)
+        with toolhead_adapter.temporary_fan_speed(0.):
+            toolhead_adapter.check_motion()
+            if work.get("phase", "extrude") == "extrude":
+                if self.custom_before:
+                    gcode_adapter.run_command(self.custom_before, strict=True)
+                toolhead_adapter.check_motion()
+                if prepare:
+                    self.prepare_extrusion()
+                self.repay_retract()
+                self._extrude_remaining(
+                    slot_num, self.resume_purge_distance,
+                    self.purge_speed, generation, work)
+                work["phase"] = "retract"
+            if work["phase"] == "retract":
+                self.retract_for_pause(work)
+                work["phase"] = "after"
+            if work["phase"] == "after":
+                if self.custom_after:
+                    gcode_adapter.run_command(self.custom_after, strict=True)
+                work["phase"] = "done"
+            toolhead_adapter.check_motion()
+
+    def runout_chunk_end(self, retract):
+        """Relieve pressure, then run the machine's segment cleaning action."""
+        generation = self.mms.get_mms_resume().get_status()["generation"]
+        toolhead_adapter.check_motion()
+        if retract:
+            # The feeder is released; use the configured E-only relief.
+            self._retract(self.retraction_compensation - self._retraction_debt,
+                          generation)
+        if self.runout_chunk_gcode:
+            gcode_adapter.run_command(self.runout_chunk_gcode, strict=True)
+        else:
+            self.tray_eject()
+        self._check_generation(generation)
+        toolhead_adapter.check_motion()
 
     # ---- Tray ----
     def move_to_tray(self):
@@ -224,315 +399,41 @@ class MMSPurge:
             wait_toolhead = True
         )
 
-    # ---- Task ----
-    def _async_cold_pull(self, slot_num, distance, speed):
-        # Setup and start task in background
-        func = self._cold_pull_task
-        params = {
-            "slot_num" : slot_num,
-            "distance" : distance,
-            "speed" : speed,
-        }
-        async_task = AsyncTask()
-        try:
-            if async_task.setup(func, params):
-                async_task.start()
-        except Exception as e:
-            self.log_error(f"slot[{slot_num}] async cold_pull error: {e}")
-            return False
-        return True
+    def _purge_check(self, slot_num, generation):
+        self._check_generation(generation)
+        self.mms_fil_detection.check(slot_num)
+        toolhead_adapter.check_motion()
 
-    def _cold_pull_task(self, slot_num, distance, speed):
-        self.mms_delivery.mms_move(
-            slot_num, -abs(distance), speed, speed)
-
-    def _async_purge_feed(self, slot_num, distance):
-
-        def _task():
-            # No select method
-            spd = extruder_adapter.transform_speed(self.purge_speed)
-            self.mms_delivery.mms_drive_move(
-                slot_num, abs(distance), spd, spd)
-
-        try:
-            async_task = AsyncTask()
-            if async_task.setup(_task):
-                async_task.start()
-        except Exception as e:
-            self.log_error(f"slot[{slot_num}] async purge_feed error: {e}")
-            return False
-        return True
-
-    def _async_move_forward(self, slot_num, distance, speed):
-
-        def _task():
-            self.mms_delivery.mms_move(
-                slot_num, abs(distance), speed, speed)
-
-        try:
-            async_task = AsyncTask()
-            if async_task.setup(_task):
-                async_task.start()
-        except Exception as e:
-            self.log_error(f"slot[{slot_num}] async move_forward error: {e}")
-            return False
-        return True
-
-    def _async_move_backward(self, slot_num, distance, speed):
-
-        def _task():
-            self.mms_delivery.mms_move(
-                slot_num, -abs(distance), speed, speed)
-
-        try:
-            async_task = AsyncTask()
-            if async_task.setup(_task):
-                async_task.start()
-        except Exception as e:
-            self.log_error(f"slot[{slot_num}] async move_backward error: {e}")
-            return False
-        return True
-
-    # ---- Toolhead Control ----
-    # def pressure_pulse_cleaning(self, slot_num):
-    #     if self.pulse_clean_enable == 0:
-    #         return
-
-    #     log_prefix = f"slot[{slot_num}] pressure pulse cleaning"
-
-    #     # Clear buffer volume
-    #     mms_buffer = self._pause_mms_buffer(slot_num)
-    #     if not mms_buffer.clear(slot_num):
-    #         raise PurgeFailedError(
-    #             f"{log_prefix} failed, mms_buffer is not clear",
-    #             self.mms.get_mms_slot(slot_num)
-    #         )
-
-    #     # Calculate
-    #     # Extruder params
-    #     # If retracted_dist <= 0 ?
-    #     retracted_dist = self.retract_dist - self.extrude_dist
-    #     total_retracted_dist = retracted_dist * self.pulse_count
-    #     # Drive stepper params
-    #     unload_dist = total_retracted_dist - mms_buffer.get_spring_stroke()
-    #     # Unit: pulse_speed::mm/min -> unload_speed::mm/s
-    #     unload_speed = extruder_adapter.transform_speed(
-    #         self.pulse_speed) * 0.5
-
-    #     self.log_info_s(f"{log_prefix} begin")
-
-    #     # Startup async unload first
-    #     self._async_move_backward(slot_num, unload_dist, unload_speed)
-    #     for i in range(self.pulse_count):
-    #         # Retract
-    #         extruder_adapter.retract(self.retract_dist, self.pulse_speed)
-    #         toolhead_adapter.dwell(self.pulse_rest_time)
-    #         # Extrude
-    #         extruder_adapter.extrude(self.extrude_dist, self.pulse_speed)
-    #         toolhead_adapter.dwell(self.pulse_rest_time)
-
-    #     # Finally wait idle
-    #     self.mms_delivery.wait_mms_selector_and_drive(slot_num)
-    #     self.log_info_s(
-    #         f"{log_prefix} finish"
-    #         f", total retracted: {total_retracted_dist:.2f} mm"
-    #     )
-
-    # def _apply_nozzle_priming(self, slot_num):
-    #     """Prime nozzle after filament change."""
-    #     mms_buffer = self._pause_mms_buffer(slot_num)
-
-    #     log_prefix = f"slot[{slot_num}] purge with nozzle priming only"
-    #     self.log_info_s(f"{log_prefix} begin")
-
-    #     # Make sure buffer is halfway
-    #     if not mms_buffer.halfway(slot_num):
-    #         raise PurgeFailedError(
-    #             f"{log_prefix} failed, mms_buffer is not halfway",
-    #             self.mms.get_mms_slot(slot_num)
-    #         )
-
-    #     distance = abs(self.nozzle_priming_dist)
-    #     move_speed = extruder_adapter.transform_speed(
-    #         self.nozzle_priming_speed)
-    #     move_time = distance / move_speed
-
-    #     self._async_move_forward(slot_num, distance, move_speed)
-    #     extruder_adapter.extrude(distance, self.nozzle_priming_speed)
-    #     self.log_info_s(f"{log_prefix}, distance: {distance} mm")
-
-    #     # Wait async task finish
-    #     self.mms_delivery.wait_mms_selector_and_drive(
-    #         slot_num=slot_num, timeout=move_time+5)
-
-    #     # Reduces underextrusion after retraction
-    #     # toolhead_adapter.release_pressure()
-
-    #     self.log_info_s(f"{log_prefix} finish")
-
-    def apply_retraction_compensation(self, slot_num):
+    def apply_retraction_compensation(self, slot_num, generation=None,
+                                      distance=None, speed=None, work=None):
         """Extruder retract a little bit to decrease nozzle remain."""
-        mms_buffer = self._pause_mms_buffer(slot_num)
+        if generation is None:
+            generation = self.mms.get_mms_resume().get_status()["generation"]
+        mms_buffer = self.mms.get_mms_slot(slot_num).get_mms_buffer()
+        mms_buffer.prepare_feed(slot_num)
         log_prefix = f"slot[{slot_num}] apply retraction compensation"
-
-        # Make sure buffer is clear
-        if not mms_buffer.clear(slot_num):
-            raise PurgeFailedError(
-                f"{log_prefix} failed, mms_buffer is not clear",
-                self.mms.get_mms_slot(slot_num)
-            )
+        if self.mms_fil_detection.is_activating():
+            self.mms_fil_detection.check(slot_num)
 
         distance = min(
-            abs(self.retraction_compensation),
+            abs(self.retraction_compensation if distance is None else distance),
             mms_buffer.get_spring_stroke()
         )
-        extruder_adapter.retract(distance, self.retract_speed)
+        self._retract(distance, generation, speed, slot_num=slot_num,
+                      work=work)
         self.log_info_s(f"{log_prefix}, distance: {distance} mm")
 
     # ---- Cold pull ----
-    def cold_pull(self, slot_num):
-        COLD_PULL_TEMP_MAP = {
-            "PLA": {
-                "temp" : 70,
-                "length" : 15,
-                "speed" : 300,
-                "wait_second" : 5.0,
-            },
-            "ABS": {
-                "temp" : 100,
-                "length" : 20,
-                "speed" : 200,
-                "wait_second" : 5.0,
-            },
-            "PETG": {
-                "temp" : 80,
-                "length" : 18,
-                "speed" : 250,
-                "wait_second" : 5.0,
-            },
-            "TPU": {
-                "temp" : 50,
-                "length" : 15,
-                "speed" : 300,
-                "wait_second" : 5.0,
-            },
-        }
-
-        self._prepare_mms_buffer(slot_num)
-        mms_slot = self.mms.get_mms_slot(slot_num)
-        # material_type = mms_slot.get_material_type()
-        # solidify_temp = COLD_PULL_TEMP_MAP.get(material_type, 70)
-        solidify_temp = 170
-        solidify_wait = 3.0
-        pull_length = 150
-        pull_speed = 1200
-        unload_speed = extruder_adapter.transform_speed(pull_speed)
-
-        self.log_info_s(f"slot[{slot_num}] cold pull begin")
-
-        target_temp = extruder_adapter.get_target_temp()
-
-        # if solidify_temp > target_temp?
-        with toolhead_adapter.fan_cooldown(
-                speed = self.fan_cooldown_speed,
-                wait = self.fan_cooldown_wait
-            ):
-            extruder_adapter.set_temperature(solidify_temp, wait=True)
-
-            self.log_info_s(
-                f"slot[{slot_num}] solidify wait: {solidify_wait}s...")
-            toolhead_adapter.dwell(delay=solidify_wait)
-
-            # Begin async feed
-            success = self._async_cold_pull(slot_num,
-                                            pull_length, unload_speed)
-            if not success:
-                return False
-            self.log_info_s(f"slot[{slot_num}] async move backward begin")
-
-            # Begin extruder retract
-            extruder_adapter.retract(pull_length, pull_speed)
-
-        self.log_info_s(f"slot[{slot_num}] recover temp")
-        # Recover original target temp
-        extruder_adapter.set_temperature(target_temp, wait=False)
-
-        # Make sure drive stepper is idle
-        self.mms_delivery.wait_mms_drive(slot_num)
-        self.log_info_s(f"slot[{slot_num}] cold pull finish")
-
-        return True
-
     # ---- Bussiness methods ----
     def _safety_checks(self, slot_num):
         if slot_num is None:
-            self.log_warning("current slot is None, return")
-            return False
-
+            raise PurgeFailedError("purge has no identified source slot")
         if self.is_running():
-            msg = "another mms purge is running, skip"
-            gcode_adapter.respond_error(msg)
-            self.log_warning(msg)
-            return False
-
-        # Check toolhead
+            raise PurgeFailedError("another MMS purge is running")
         if not toolhead_adapter.is_homed():
-            msg = "toolhead is not homed, mms purge skip"
-            gcode_adapter.respond_error(msg)
-            self.log_warning(msg)
-            return False
-
-        # Check extruder
+            raise PurgeFailedError("home XYZ before purging")
         if not extruder_adapter.is_hot_enough():
-            return False
-
-        return True
-
-    def _standard_purge(self, slot_num):
-        log_prefix = f"slot[{slot_num}] standard purge"
-        self.log_info_s(f"{log_prefix} begin")
-
-        mms_slot = self.mms.get_mms_slot(slot_num)
-        mms_buffer = mms_slot.get_mms_buffer()
-
-        # Calculation
-        e_filament_area = extruder_adapter.get_extruder_filament_area()
-        purge_distance = self.get_purge_distance()
-        purge_volume = purge_distance * e_filament_area
-
-        spring_stroke = mms_buffer.get_spring_stroke()
-        b_filament_cs = mms_buffer.get_status().get("filament_cross_section")
-        deliver_distance = purge_volume / b_filament_cs - spring_stroke * 0.5
-
-        # Prepare
-        self._prepare_mms_buffer(slot_num)
-        self.move_to_tray()
-        self.mms_delivery.mms_select(slot_num)
-
-        # Begin async feed
-        if not self._async_purge_feed(slot_num, deliver_distance):
-            raise PurgeFailedError(
-                f"{log_prefix} async feed failed", mms_slot
-            )
-
-        # Begin extrude
-        extruder_adapter.extrude(purge_distance, self.purge_speed)
-        # Release pressure after extrude
-        # toolhead_adapter.release_pressure()
-        # Make sure drive stepper is idle
-        self.mms_delivery.wait_mms_drive(slot_num)
-
-        # Wait a while to solidify filament
-        with toolhead_adapter.fan_cooldown(
-                speed = self.fan_cooldown_speed,
-                wait = self.fan_cooldown_wait
-            ):
-            self.apply_retraction_compensation(slot_num)
-
-        # Try tray_eject
-        self.tray_eject()
-
-        self.log_info_s(f"{log_prefix} finish")
+            raise PurgeFailedError("heat the nozzle before purging")
 
     def _exec_custom_macro(self, macro, position):
         if macro:
@@ -540,249 +441,147 @@ class MMSPurge:
                 f"MMS execute macro {position} PURGE:\n"
                 f"{macro}"
             )
-            gcode_adapter.run_command(macro)
+            gcode_adapter.run_command(macro, strict=True)
 
-    def mms_purge_async(self):
-        self._exec_custom_macro(self.custom_before, "before")
+    def _extrude_remaining(self, slot_num, distance, speed, generation, work):
+        distance = work.setdefault("purge_remaining", distance)
+        if distance <= 0.:
+            return
 
-        slot_num = self.mms.get_current_slot()
-        if not self._safety_checks(slot_num):
-            return False
+        def accepted(amount):
+            if self._retraction_debt:
+                self._set_retraction_debt(
+                    max(0., self._retraction_debt - amount), generation)
+            work["purge_remaining"] = max(0., work["purge_remaining"] - amount)
 
-        log_prefix = f"slot[{slot_num}] purge"
-        self.log_info_s(f"{log_prefix} begin")
+        self.mms_delivery.move_with_buffer(
+            slot_num, distance, speed,
+            check=lambda: self._purge_check(slot_num, generation),
+            on_segment_accepted=accepted)
 
-        with self._purge_is_running():
-            try:
-                if self.is_enabled():
-                    self._standard_purge(slot_num)
-                else:
-                    # self._apply_nozzle_priming(slot_num)
-                    # Wait a while to solidify filament
-                    with toolhead_adapter.fan_cooldown(
-                            speed=self.fan_cooldown_speed,
-                            wait=self.fan_cooldown_wait
-                        ):
-                        self.apply_retraction_compensation(slot_num)
-
-            except PurgeFailedError as e:
-                self.log_warning(f"{log_prefix} failed: {e}")
-                return False
-            except Exception as e:
-                self.log_error(f"{log_prefix} error: {e}")
-                return False
-
-        self.log_info_s(f"{log_prefix} finish")
-        self._exec_custom_macro(self.custom_after, "after")
-        return True
-
-    def mms_purge(self):
-        self._exec_custom_macro(self.custom_before, "before")
-
-        slot_num = self.mms.get_current_slot()
-        if not self._safety_checks(slot_num):
-            return False
+    def mms_purge(self, prepare=True, distance=None, speed=None,
+                  retract=None, retract_speed=None, work=None):
+        if work is None:
+            work = {}
+        if work.get("phase", "extrude") == "extrude":
+            self._exec_custom_macro(self.custom_before, "before")
+        resume = self.mms.get_mms_resume()
+        slot_num = resume.get_exhausted_slot()
+        if slot_num is None or not resume.is_tail_available(slot_num):
+            slot_num = self.mms.get_current_slot()
+        self._safety_checks(slot_num)
 
         log_prefix = f"slot[{slot_num}] mms purge"
         self.log_info_s(f"{log_prefix} begin")
-
-        try:
-            with self._purge_is_running():
-                mms_slot = self.mms.get_mms_slot(slot_num)
-                mms_drive = mms_slot.get_mms_drive()
-
-                # Make sure mms_buffer is idle
-                self._pause_mms_buffer(slot_num)
-
+        context = (self.mms_fil_detection.monitor(slot_num, configured=True)
+                   if self.is_enabled() else nullcontext())
+        with self._purge_is_running() as generation, context, \
+                toolhead_adapter.temporary_fan_speed(0.):
+            if work.get("phase", "extrude") == "extrude":
                 if self.is_enabled():
-                    # Move to tray point
+                    self._purge_check(slot_num, generation)
                     self.move_to_tray()
-                    # Make sure buffer sprint is relaxed
-                    self.mms_delivery.clear_buffer(slot_num)
-
-                    # Sync to extrude
-                    with mms_drive.sync_with_extruder():
-                        extruder_adapter.extrude(
-                            self.get_purge_distance(),
-                            self.get_purge_speed()
-                        )
-
-                    # Wait a while to solidify filament
-                    with toolhead_adapter.fan_cooldown(
-                            speed = self.fan_cooldown_speed,
-                            wait = self.fan_cooldown_wait
-                        ):
-                        # Retraction compensation
-                        distance = abs(self.retraction_compensation)
-                        with mms_drive.sync_with_extruder():
-                            extruder_adapter.retract(
-                                distance, self.retract_speed)
-                        self.log_info_s(
-                            f"slot[{slot_num}] apply retraction compensation,"
-                            f" distance: {distance} mm"
-                        )
-
-                    # Try tray_eject
-                    self.tray_eject()
-
-                else:
-                    # Wait a while to solidify filament
-                    with toolhead_adapter.fan_cooldown(
-                            speed = self.fan_cooldown_speed,
-                            wait = self.fan_cooldown_wait
-                        ):
-                        # Retraction compensation
-                        distance = abs(self.retraction_compensation)
-                        with mms_drive.sync_with_extruder():
-                            extruder_adapter.retract(
-                                distance, self.retract_speed)
-                        self.log_info_s(
-                            f"slot[{slot_num}] apply retraction compensation,"
-                            f" distance: {distance} mm"
-                        )
-
-                    # self.log_info_s(f"slot[{slot_num}] apply nozzle priming")
-
-                    # Make sure buffer sprint is relaxed
-                    # self.mms_delivery.clear_buffer(slot_num)
-
-                    # distance = abs(self.nozzle_priming_dist)
-                    # with mms_drive.sync_with_extruder():
-                    #     extruder_adapter.extrude(
-                    #         distance, self.nozzle_priming_speed)
-
-                    # self.log_info_s(
-                    #     f"slot[{slot_num}] extrude distance: {distance} mm")
-
-            msg = f"{log_prefix} finish"
-            gcode_adapter.respond_echo(msg)
-            self.log_info_s(msg)
-
-            self._exec_custom_macro(self.custom_after, "after")
-            return True
-
-        except PurgeFailedError as e:
-            self.log_warning(f"{log_prefix} failed: {e}")
-            gcode_adapter.respond_error("mms purge failed")
-            return False
-        except Exception as e:
-            self.log_error(f"{log_prefix} error: {e}")
-            gcode_adapter.respond_error("mms purge failed")
-            return False
-
-    def mms_purge_lazy(self):
-        self._exec_custom_macro(self.custom_before, "before")
-
-        slot_num = self.mms.get_current_slot()
-        if not self._safety_checks(slot_num):
-            return False
-
-        log_prefix = f"slot[{slot_num}] mms purge lazy"
-        self.log_info_s(f"{log_prefix} begin")
-
-        try:
-            with self._purge_is_running():
-                mms_slot = self.mms.get_mms_slot(slot_num)
-                mms_drive = mms_slot.get_mms_drive()
-
-                # Make sure mms_buffer is idle
-                mms_buffer = self._pause_mms_buffer(slot_num)
-
+                    self._purge_check(slot_num, generation)
+                    buffer = self.mms.get_mms_slot(slot_num).get_mms_buffer()
+                    buffer.prepare_feed(slot_num)
+                    if prepare:
+                        self.prepare_extrusion()
+                        self._purge_check(slot_num, generation)
+                    self._extrude_remaining(
+                        slot_num, self.get_purge_distance()
+                        if distance is None else distance,
+                        self.get_purge_speed() if speed is None else speed,
+                        generation, work)
+                    self._purge_check(slot_num, generation)
+                work["phase"] = "retract"
+            if work["phase"] == "retract":
+                self.apply_retraction_compensation(
+                    slot_num, generation, retract, retract_speed, work)
+                work["phase"] = "cool"
+            if work["phase"] == "cool":
+                with toolhead_adapter.fan_cooldown(
+                        speed=self.fan_cooldown_speed,
+                        wait=self.fan_cooldown_wait):
+                    pass
+                work["phase"] = "eject"
+            if work["phase"] == "eject":
                 if self.is_enabled():
-                    # Move to tray point
-                    self.move_to_tray()
-
-                    distance = self.get_purge_distance()
-                    e_spd = self.get_purge_speed()
-                    speed = extruder_adapter.transform_speed(e_spd) * 0.5
-                    accel = 150
-
-                    mms_buffer.clear(slot_num)
-
-                    # mms_buffer.async_sprint_fill(slot_num, speed)
-                    # extruder_adapter.extrude(distance, e_spd)
-                    extruder_adapter.extrude(distance, e_spd, wait=False)
-
-                    distance = distance / 1.5
-                    self.log_info_s(
-                        f"\nslot[{slot_num}] deliver\n"
-                        f"distance: {distance} mm\n"
-                        f"speed: {speed} mm/s\n"
-                        f"accel: {accel} mm/s^2"
-                    )
-                    mms_drive.manual_move(distance, speed, accel)
-
-                    # for i
-                    # distance/mms_buffer.get_spring_stroke
-                    # if buffer_runout is release
-                    # pause
-
-                    # Wait a while to solidify filament
-                    with toolhead_adapter.fan_cooldown(
-                            speed = self.fan_cooldown_speed,
-                            wait = self.fan_cooldown_wait
-                        ):
-                        self.mms_delivery.clear_buffer(slot_num)
-
-                        # Retraction compensation
-                        distance = abs(self.retraction_compensation)
-                        with mms_drive.sync_with_extruder():
-                            extruder_adapter.retract(
-                                distance, self.retract_speed)
-
-                        self.log_info_s(
-                            f"slot[{slot_num}] apply retraction compensation,"
-                            f" distance: {distance} mm"
-                        )
-
-                    # Try tray_eject
+                    self._purge_check(slot_num, generation)
                     self.tray_eject()
+                work["phase"] = "after"
 
-            msg = f"{log_prefix} finish"
-            gcode_adapter.respond_echo(msg)
-            self.log_info_s(msg)
-
+        if work["phase"] == "after":
             self._exec_custom_macro(self.custom_after, "after")
-            return True
-
-        except PurgeFailedError as e:
-            self.log_warning(f"{log_prefix} failed: {e}")
-            gcode_adapter.respond_error("mms purge failed")
-            return False
-        except Exception as e:
-            self.log_error(f"{log_prefix} error: {e}")
-            gcode_adapter.respond_error("mms purge failed")
-            return False
+            work["phase"] = "done"
+        gcode_adapter.respond_echo(f"{log_prefix} finish")
+        self.log_info_s(f"{log_prefix} finish")
+        return True
 
     # ---- GCode ----
+    def cmd_MMS_REPAY_RETRACT(self, gcmd):
+        self.mms.check_maintenance(gcmd)
+        try:
+            with toolhead_adapter.motion_scope():
+                if self._retraction_debt > 0.:
+                    slot_num = self._motion_slot()
+                    resume = self.mms.get_mms_resume()
+                    slot = resume.check_loaded_source(slot_num)
+                    buffer = slot.get_mms_buffer()
+                    buffer.prepare_feed(slot_num)
+                    resume.check_loaded_source(slot_num)
+                self.repay_retract()
+        except MMSException as e:
+            raise gcmd.error(str(e))
+
+    def cmd_MMS_CLEAR_RETRACT(self, gcmd):
+        self.mms.check_maintenance(gcmd)
+        self.clear_retract()
+
     @log_time_cost("log_info_s")
     def cmd_MMS_PURGE(self, gcmd):
-        with toolhead_adapter.snapshot():
-            with toolhead_adapter.safe_z_raise(self.z_raise):
-                # self.mms_purge()
-                self.mms_purge_async()
+        # A file may purge at PRINT_START. Console maintenance still cannot
+        # interrupt a print or a pending recovery. Purge uses normal feeding.
+        from_sd = virtual_sdcard_adapter.is_cmd_from_sd()
+        self.mms.check_maintenance(gcmd, allow_printing=from_sd)
+        distance = gcmd.get_float("DISTANCE", None, minval=0.)
+        speed = gcmd.get_float("SPEED", None, above=0.)
+        retract = gcmd.get_float("RETRACT", None, minval=0.)
+        retract_speed = gcmd.get_float("RETRACT_SPEED", None, above=0.)
+        try:
+            resume = self.mms.get_mms_resume()
+            slot_num = resume.get_exhausted_slot()
+            if slot_num is None or not resume.is_tail_available(slot_num):
+                slot_num = self.mms.get_current_slot()
+            slot = resume.check_loaded_source(slot_num)
+            buffer = slot.get_mms_buffer()
+            generation = resume.get_status()["generation"]
+            with toolhead_adapter.motion_scope(z_raise=self.z_raise) as state:
+                self.mms_purge(distance=distance, speed=speed,
+                               retract=retract, retract_speed=retract_speed)
+                buffer.check_feed(slot_num)
+                toolhead_adapter.return_to_saved(state, clearance=self.z_raise)
+                self._check_generation(generation)
+                buffer.check_feed(slot_num)
+        except Exception as e:
+            raise gcmd.error(f"MMS_PURGE failed: {e}") from e
+
 
     @log_time_cost("log_info_s")
-    def cmd_MMS_PURGE_TEST(self, gcmd):
-        with toolhead_adapter.snapshot():
-            with toolhead_adapter.safe_z_raise(self.z_raise):
-                self.mms_purge_lazy()
-
-    def cmd_MMS_TRAY(self, gcmd=None):
-        with toolhead_adapter.safe_z_raise(self.z_raise):
+    def cmd_MMS_TRAY(self, gcmd):
+        self.mms.check_maintenance(gcmd)
+        with toolhead_adapter.motion_scope(z_raise=self.z_raise) as state:
             self.move_to_tray()
+            toolhead_adapter.move_z(
+                state["position"]["z"], wait_toolhead=True)
 
-    def cmd_MMS_TRAY_EJECT(self, gcmd=None):
+    def cmd_MMS_TRAY_EJECT(self, gcmd):
+        self.mms.check_maintenance(gcmd)
         if not self._can_tray_eject():
-            self.log_warning(
-                "eject_point is not available, MMS_TRAY_EJECT return"
-            )
-            return
-
-        with toolhead_adapter.snapshot():
-            with toolhead_adapter.safe_z_raise(self.z_raise):
-                self.move_to_tray()
-                self.tray_eject()
+            raise gcmd.error("MMS_TRAY_EJECT requires eject_point")
+        with toolhead_adapter.motion_scope(z_raise=self.z_raise) as state:
+            self.move_to_tray()
+            self.tray_eject()
+            toolhead_adapter.return_to_saved(state, clearance=self.z_raise)
 
 
 def load_config(config):

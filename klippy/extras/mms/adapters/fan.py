@@ -47,7 +47,7 @@ class FanAdapter(BaseAdapter):
 
         # Command style: M106 S{speed * 255}
         gcode_adapter.run_command(
-            f"{self._speed_command} S{speed * self._speed_factor}"
+            f"{self._speed_command} S{speed * self._speed_factor}", strict=True
         )
 
     def turn_off(self):

@@ -1,12 +1,14 @@
+from __future__ import annotations
+
 import logging
 import os
 import pathlib
-
 from dataclasses import dataclass
 
 import gi
+
 gi.require_version("Gtk", "3.0")
-from gi.repository import Gdk, GdkPixbuf, Gtk, Pango
+from gi.repository import GdkPixbuf, Gtk
 
 
 @dataclass(frozen=True)
@@ -18,12 +20,16 @@ class ImageConfig:
 
 
 class VividImage(Gtk.Image):
+    # Class-level pixbuf cache keyed by (path, width, height) —
+    # avoids loading the same SVG from disk N times for N slot buttons
+    _pixbuf_cache: dict[tuple[str, int, int], GdkPixbuf.Pixbuf] = {}
+
     def __init__(self, file_name: str, width: int, height: int):
         super().__init__()
         self.width = int(width)
         self.height = int(height)
         config = ImageConfig()
-        
+
         # file_name should set with ext, like "*.svg"
         self.file_full_path = os.path.join(config.resource_path, file_name)
 
@@ -36,9 +42,14 @@ class VividImage(Gtk.Image):
             self.set_from_pixbuf(pixbuf)
 
     def _create_pixbuf(self):
+        cache_key = (self.file_full_path, self.width, self.height)
+        if cache_key in VividImage._pixbuf_cache:
+            return VividImage._pixbuf_cache[cache_key]
         try:
-            return GdkPixbuf.Pixbuf.new_from_file_at_size(
+            pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_size(
                 self.file_full_path, self.width, self.height)
+            VividImage._pixbuf_cache[cache_key] = pixbuf
+            return pixbuf
         except Exception as e:
             logging.error(f"Failed to load image: {self.file_full_path}")
             logging.error(str(e))

@@ -2,28 +2,17 @@ import logging
 import os
 
 import gi
+
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gtk
 
 from ks_includes.screen_panel import ScreenPanel
-
-from vivid.controllers.mms import get_klippy_api
-from vivid.config.manager import VividConfigManager
-from vivid.components.box import (
-    FixedSquareBox, 
-    FixedRectangleBox,
-    CircleBox
-)
-from vivid.components.button import (
-    HorizontalImageButton as HorButton,
-    CircleButton
-)
+from vivid.components.box import CircleBox, FixedRectangleBox, FixedSquareBox
+from vivid.components.button import CircleButton
 from vivid.components.label import VividLabel as VLabel
-from vivid.components.utils import (
-    apply_button_css,
-    create_section_container,
-    get_screen_width
-)
+from vivid.components.utils import apply_button_css, create_section_container, get_screen_width
+from vivid.controllers.mms import MMSController
+from vivid.controllers.mms_slot import MMSSlotController
 
 
 class Panel(ScreenPanel):
@@ -31,43 +20,51 @@ class Panel(ScreenPanel):
     def __init__(self, screen, title=None, gcode_file=None, parent_hook=None):
         super().__init__(screen, title or _("ViViD PrePrint"))
         self.gcode_file = gcode_file
-        self.gcode_fullpath = os.path.join(
-            self._screen.files.gcodes_path, gcode_file)
+        gcode_dir = self._screen.files.gcodes_path if gcode_file else None
+        self.gcode_fullpath = (
+            os.path.join(gcode_dir, gcode_file) if gcode_dir and gcode_file else None
+        )
         self.parent_hook = parent_hook
 
-        self.cfg_manager = VividConfigManager(
-            self._screen._config.config_path)
+        self.mms_controller = MMSController(self._screen)
+        self.mms_slot_controller = MMSSlotController(self._screen)
+
+        self.mms_controller.register_slot_color_callback(
+            self._on_slot_color_changed)
+        self.mms_controller.register_slot_material_callback(
+            self._on_slot_material_changed)
 
         self.mapping_btn_lst = []
+        self.main_grid = None
+        self.slot_ids = set()
         # [(0,0), ... (swap_num,slot_num)]
         self.mapping_pairs = []
 
         # self.gf_uuid = None
         self.gf_filename = None
         self.gf_meta = []
-        self.parse_gcodefile_meta()
-
-        # Don't build_ui init, build in activate
-        # self.build_ui()
+        if self.gcode_file is not None:
+            self.parse_gcodefile_meta()
 
     def parse_gcodefile_meta(self):
-        fileinfo = self._screen.files.get_file_info(self.gcode_file)
+        fileinfo = self._screen.files.get_file_info(self.gcode_file) or {}
 
         # self.gf_uuid = fileinfo.get("uuid")
         self.gf_filename = fileinfo.get("filename")
 
-        filament_type_str = fileinfo.get("filament_type", "")
+        filament_type_str = fileinfo.get("filament_type") or ""
         filament_types = [f.strip() for f in filament_type_str.split(';') if f and f.strip()]
 
         filament_colors = fileinfo.get("filament_colors", None)
-        if not filament_colors:
+        if not filament_colors and self.gcode_fullpath:
             filament_colors = parse_filament_colors(self.gcode_fullpath) or []
 
+        filament_colors = filament_colors or []
         max_items = min(len(filament_types), len(filament_colors))
 
         if max_items > 0:
             self.gf_meta = [
-                (filament_types[i], 
+                (filament_types[i],
                 filament_colors[i] if i < len(filament_colors) else "")
                 for i in range(max_items)
             ]
@@ -81,8 +78,6 @@ class Panel(ScreenPanel):
 
     # ---- Panel life ----
     def activate(self):
-        # Force reload cfg everytime activate
-        self.cfg_manager.manual_load()
         # Rebuild UI
         self.build_ui()
 
@@ -95,6 +90,31 @@ class Panel(ScreenPanel):
 
         # Remove UI
         self.remove_ui()
+
+    def process_update(self, action, data):
+        if action == "notify_status_update":
+            if "mms" in data and self.main_grid is not None:
+                slot_ids = {num for num, _ in self.mms_controller.get_slots_filament_color()}
+                if slot_ids != self.slot_ids:
+                    self.remove_ui()
+                    self.build_ui()
+                    self.main_grid.show_all()
+            self.mms_controller.handle_notify_status_update(data)
+
+    def _on_slot_color_changed(self, slot_num, color):
+        """WebSocket push: update mapping button colour for the affected slot."""
+        if not self.mapping_btn_lst:
+            return  # UI not built yet
+        for i, (swap_num, s_num) in enumerate(self.mapping_pairs):
+            if s_num == slot_num and i < len(self.mapping_btn_lst):
+                new_color = color or "#FFFFFF"
+                new_btn = self.create_mapping_button(swap_num, slot_num, new_color)
+                self.replace_slot_button(swap_num, new_btn)
+                self.mapping_pairs[i] = (swap_num, slot_num)
+
+    def _on_slot_material_changed(self, slot_num, material):
+        """WebSocket push: preprint panel does not display material per slot."""
+        pass
 
     def build_ui(self):
         """Build the main UI structure"""
@@ -119,7 +139,9 @@ class Panel(ScreenPanel):
         self.content.add(self.main_grid)
 
     def remove_ui(self):
-        self.content.remove(self.main_grid)
+        if self.main_grid is not None:
+            self.main_grid.destroy()
+            self.main_grid = None
 
     def create_bottom_area(self):
         bottom_area = create_section_container("vvd-preprint-area-bottom")
@@ -131,11 +153,17 @@ class Panel(ScreenPanel):
     def create_filament_slot_mapping(self):
         area = create_section_container("vvd-preprint-area-slot")
 
-        for slot_num, color, _ in self.cfg_manager.get_slots_configuration():
-            # Default swap_num is slot_num
-            swap_num = slot_num
+        colors = dict(self.mms_controller.get_slots_filament_color())
+        previous = dict(self.mapping_pairs)
+        self.slot_ids = set(colors)
+        self.mapping_btn_lst.clear()
+        self.mapping_pairs.clear()
+        for swap_num in colors:
+            slot_num = previous.get(swap_num, swap_num)
+            if slot_num not in colors:
+                slot_num = swap_num
 
-            button = self.create_mapping_button(swap_num, slot_num, color)
+            button = self.create_mapping_button(swap_num, slot_num, colors[slot_num])
             # Init mapping
             self.mapping_btn_lst.append(button)
             self.mapping_pairs.append((swap_num, slot_num))
@@ -160,7 +188,6 @@ class Panel(ScreenPanel):
 
         # Create filament metadata box
         box_f = self.pack_box_filament(swap_num)
-        # Create slot circle button
         box_circle = self.pack_circle_slot(slot_num, color)
 
         # Compose components
@@ -191,37 +218,26 @@ class Panel(ScreenPanel):
 
         if swap_num < len(self.gf_meta):
             f_type, f_color = self.gf_meta[swap_num]
-
             label_content = f"T{swap_num}"
             bg_color = f_color
             base_class = "vvd-preprint-filament-box"
             custom_css = f"background-color: {f_color};"
         else:
-            # Swap num not available
             label_content = "N/A"
             bg_color = "#FFFFFF"
             base_class = "vvd-preprint-filament-box-na"
             custom_css = ""
 
-        box_l = Gtk.Box(
-            orientation=Gtk.Orientation.VERTICAL,
-            halign=Gtk.Align.CENTER,
-            valign=Gtk.Align.CENTER,
-            hexpand=True,
-            vexpand=True
-        )
-
+        box_l = Gtk.Box(orientation=Gtk.Orientation.VERTICAL,
+                        halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER,
+                        hexpand=True, vexpand=True)
         lable_num = VLabel(content=label_content, size=font_size, bold=True)
         lable_num.adjust_color(background_color=bg_color)
         box_l.add(lable_num)
-        # lable_f = VLabel(content=f"{f_type}", size=font_size*0.7, bold=True)
-        # lable_f.adjust_color(background_color=bg_color)
-        # box_l.add(lable_f)
 
         box_f = FixedSquareBox(size=square_size)
         box_f.set_content(box_l)
         apply_button_css(box_f, base_class, custom_css)
-
         return box_f
 
     def pack_circle_slot(self, slot_num, color, clicked_callback=None):
@@ -237,6 +253,7 @@ class Panel(ScreenPanel):
             circle = CircleButton(
                 diameter=diameter,
                 border_width=border_width,
+                # border_color=color or "#FFFFFF",
                 border_color=color,
                 label=label
             )
@@ -251,12 +268,7 @@ class Panel(ScreenPanel):
 
     def apply_slot_button_color(self, button, color):
         base_class = "vvd-preprint-btn-slot"
-        # Apply dynamic CSS
         apply_button_css(button, base_class)
-        # apply_button_css(
-        #     button, base_class, f"border-bottom-color: {color};")
-        # apply_button_css(
-        #     button, f"{base_class}:active", f"background-color: {color};")
 
     def on_mapping_clicked(self, swap_num):
         self.main_grid.remove(self.bottom_area)
@@ -272,10 +284,10 @@ class Panel(ScreenPanel):
         )
         box_compact.add(box_f)
 
-        for slot_num, color, _ in self.cfg_manager.get_slots_configuration():
-            callback = lambda _, sw=swap_num, sl=slot_num: \
-                self.mapping_update(sw, sl)
-            button = self.pack_circle_slot(slot_num, color, callback)
+        for slot_num, color in self.mms_controller.get_slots_filament_color():
+            button = self.pack_circle_slot(
+                slot_num, color, lambda _, sl=slot_num: self.mapping_update(swap_num, sl)
+            )
             box_compact.add(button)
 
         area = create_section_container("vvd-preprint-area-ctrl")
@@ -295,22 +307,23 @@ class Panel(ScreenPanel):
 
     def mapping_update(self, swap_num, slot_num):
         logging.info(f"mapping click swap_num:{swap_num}, slot_num:{slot_num}")
-        self.mapping_pairs[swap_num] = (swap_num, slot_num)
+        index = next(i for i, pair in enumerate(self.mapping_pairs) if pair[0] == swap_num)
+        self.mapping_pairs[index] = (swap_num, slot_num)
 
-        color, _ = self.cfg_manager.get_slot_configuration(slot_num)
+        color = self.mms_slot_controller.get_filament_color(slot_num)
         new_btn = self.create_mapping_button(swap_num, slot_num, color)
         self.replace_slot_button(swap_num, new_btn)
 
         self.main_grid.remove(self.bottom_area)
-        # self.bottom_area = create_section_container("vvd-preprint-area-bottom")
         self.bottom_area = self.create_bottom_area()
         self.bottom_area.attach(self.create_print_control(), 0, 0, 1, 1)
         self.main_grid.attach(self.bottom_area, 0, 1, 1, 1)
         self.main_grid.show_all()
 
     def replace_slot_button(self, swap_num, new_button):
-        if 0 <= swap_num < len(self.mapping_btn_lst):
-            current_button = self.mapping_btn_lst[swap_num]
+        index = next((i for i, pair in enumerate(self.mapping_pairs) if pair[0] == swap_num), None)
+        if index is not None:
+            current_button = self.mapping_btn_lst[index]
 
             self.mapping_area.remove(current_button)
             self.mapping_area.attach(
@@ -318,7 +331,7 @@ class Panel(ScreenPanel):
             new_button.show()
             self.mapping_area.show_all()
 
-            self.mapping_btn_lst[swap_num] = new_button
+            self.mapping_btn_lst[index] = new_button
             if current_button:
                 current_button.destroy()
 
@@ -368,15 +381,10 @@ class Panel(ScreenPanel):
 
     def on_confirm_clicked(self, widget):
         if self.mapping_pairs:
-            self._post_mapping()
+            logging.info(f"current mapping:{self.mapping_pairs}")
+            self.mms_controller.update_swap_mapping(
+                self.mapping_pairs, self.gf_filename)
         self._back_to_parent()
-
-    def _post_mapping(self):
-        logging.info(f"current mapping:{self.mapping_pairs}")
-        for swap_num, slot_num in self.mapping_pairs:
-            # Filename could have " ", so use \"\" to avoid error
-            script = f"MMS_SWAP_MAPPING SWAP_NUM={swap_num} SLOT={slot_num} FILENAME=\"{self.gf_filename}\""
-            get_klippy_api(self._screen).gcode_script(script)
 
 
 def parse_filament_colors(

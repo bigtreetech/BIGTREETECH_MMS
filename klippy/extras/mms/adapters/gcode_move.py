@@ -4,6 +4,8 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 
+from contextlib import contextmanager
+
 from .base import BaseAdapter
 from .gcode import gcode_adapter
 
@@ -12,9 +14,6 @@ class GCodeMoveAdapter(BaseAdapter):
     def __init__(self):
         super().__init__()
         self._obj_name = "gcode_move"
-
-        self._absolute_extrude = None
-        self._absolute_coordinates = None
 
     def _get_gcode_move(self):
         return self.safe_get(self._obj_name)
@@ -49,63 +48,55 @@ class GCodeMoveAdapter(BaseAdapter):
             "e" : pos.e
         }
 
-    # ---- Move meta ----
-    # G91
-    def disable_absolute_coordinates(self):
-        self._get_gcode_move().absolute_coord = False
+    # ---- Native motion state ----
+    def save_state(self, name):
+        self._get_gcode_move().cmd_SAVE_GCODE_STATE(
+            gcode_adapter.easy_gcmd("SAVE_GCODE_STATE", {"NAME": name}))
 
-    # G90
-    def enable_absolute_coordinates(self):
-        self._get_gcode_move().absolute_coord = True
+    def restore_state(self, name):
+        self._get_gcode_move().cmd_RESTORE_GCODE_STATE(
+            gcode_adapter.easy_gcmd(
+                "RESTORE_GCODE_STATE", {"NAME": name, "MOVE": 0}))
 
-    # M83
-    def disable_absolute_extrude(self):
-        self._get_gcode_move().absolute_extrude = False
+    def normalize_motion(self):
+        # Use Klipper's handlers so old/new extrusion-mode fields stay private.
+        move = self._get_gcode_move()
+        position = self.get_toolhead_position()
+        move.cmd_G90(gcode_adapter.easy_gcmd("G90"))
+        move.cmd_M83(gcode_adapter.easy_gcmd("M83"))
+        move.cmd_M220(gcode_adapter.easy_gcmd("M220", {"S": 100.}))
+        move.cmd_M221(gcode_adapter.easy_gcmd("M221", {"S": 100.}))
+        move.cmd_G92(gcode_adapter.easy_gcmd(
+            "G92", {axis.upper(): position[axis] for axis in ("x", "y", "z")}))
 
-    # M82
-    def enable_absolute_extrude(self):
-        self._get_gcode_move().absolute_extrude = True
-
-    def save_absolute_extrude(self):
-        status = self._get_gcode_move().get_status(self.reactor.monotonic())
-        self._absolute_extrude = status.get("absolute_extrude")
-
-    def restore_absolute_extrude(self):
-        if self._absolute_extrude is not None:
-            self._get_gcode_move().absolute_extrude = self._absolute_extrude
-            self._absolute_extrude = None
-
-    def save_absolute_coordinates(self):
-        status = self._get_gcode_move().get_status(self.reactor.monotonic())
-        self._absolute_coordinates = status.get("absolute_coordinates")
-
-    def restore_absolute_coordinates(self):
-        if self._absolute_coordinates is not None:
-            self._get_gcode_move().absolute_coord = self._absolute_coordinates
-            self._absolute_coordinates = None
-
-    def pause_move_absolute(self):
-        self.save_absolute_extrude()
-        self.save_absolute_coordinates()
-
-        self.disable_absolute_extrude()
-        self.disable_absolute_coordinates()
-
-    def resume_move_absolute(self):
-        # if not self.absolute_coordinates:
-        #     self.disable_absolute_coordinates()
-        # if self.absolute_extrude:
-        #     self.enable_absolute_extrude()
-        self.restore_absolute_coordinates()
-        self.restore_absolute_extrude()
+    @contextmanager
+    def filament_move_state(self):
+        # Native save/restore handles both old and new extrusion-mode fields
+        # and preserves logical E without moving back the physical filament.
+        move = self._get_gcode_move()
+        name = "__MMS_FILAMENT_MOVE"
+        move.cmd_SAVE_GCODE_STATE(gcode_adapter.easy_gcmd(
+            "SAVE_GCODE_STATE", {"NAME": name}))
+        try:
+            move.cmd_M83(gcode_adapter.easy_gcmd("M83"))
+            move.cmd_M221(gcode_adapter.easy_gcmd("M221", {"S": 100.}))
+            move.cmd_M220(gcode_adapter.easy_gcmd("M220", {"S": 100.}))
+            yield
+        finally:
+            move.cmd_RESTORE_GCODE_STATE(gcode_adapter.easy_gcmd(
+                "RESTORE_GCODE_STATE", {"NAME": name, "MOVE": 0}))
 
     def g1(self, params):
-        return self._get_gcode_move().cmd_G1(
-            gcode_adapter.easy_gcmd(
-                command = "G1",
-                params = params
+        move = self._get_gcode_move()
+        try:
+            return move.cmd_G1(
+                gcode_adapter.easy_gcmd(command="G1", params=params)
             )
-        )
+        except Exception:
+            # Locally caught native errors bypass gcode:command_error. Match
+            # core's reset so a retry cannot include the rejected E/XYZ delta.
+            move.reset_last_position()
+            raise
 
 
 # Global instance for singleton
